@@ -25,3 +25,32 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+# Frontend dependencies & build
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Root environment and caches
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+
+# Python / Django (for backend teammates)
+__pycache__/
+*.py[cod]
+*$py.class
+*.sqlite3
+venv/
+.venv/
+env/
+
+# IDE / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

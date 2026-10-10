@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Review-hawk
 
 An AI-powered code review bot for GitHub. When a pull request is opened, it
@@ -53,3 +54,49 @@ Work in progress. See the build plan below.
 - [ ] Webhook endpoint
 - [ ] LLM review and static checks
 - [ ] Dashboard
+=======
+# Review Hawk — Sharp Eyes. Cleaner Code.
+
+> **AI-powered automated code review platform for GitHub repositories.**
+
+Review Hawk automatically analyzes GitHub Pull Requests (PRs) using AI and static analysis to identify bugs, security vulnerabilities, and code-quality issues.
+
+---
+
+## 📁 Repository Structure
+
+```text
+Review-hawk/
+├── frontend/        # React + Vite application (Phase 1 complete)
+└── backend/         # Django REST Framework backend (In development)
+```
+
+---
+
+## 🚀 Frontend Quickstart
+
+1. Navigate to the `frontend/` directory:
+   ```bash
+   cd frontend
+   ```
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Copy environment configuration:
+   ```bash
+   cp .env.example .env
+   ```
+4. Start development server:
+   ```bash
+   npm run dev
+   ```
+   Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+5. Build for production:
+   ```bash
+   npm run build
+   ```
+
+For detailed frontend integration contracts and component details, see [frontend/README.md](file:///d:/Review%20hawk/frontend/README.md).
+>>>>>>> f085f03 (Review hawk frontend foundation and login page)
