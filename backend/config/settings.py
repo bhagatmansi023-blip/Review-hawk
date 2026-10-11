@@ -46,6 +46,12 @@ INSTALLED_APPS = [
     'rest_framework',
     'repos',
     'reviews',
+    "django.contrib.sites",
+    "corsheaders",
+    "allauth",
+    "allauth.account",
+    "allauth.socialaccount",
+    "allauth.socialaccount.providers.github",
 ]
 
 MIDDLEWARE = [
@@ -56,6 +62,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    "allauth.account.middleware.AccountMiddleware",
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -131,3 +138,32 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+
+
+SITE_ID = 1
+
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "allauth.account.auth_backends.AuthenticationBackend",
+]
+
+FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:5173")
+
+SOCIALACCOUNT_PROVIDERS = {
+    "github": {
+        "APPS": [
+            {
+                "client_id": env("GITHUB_CLIENT_ID"),
+                "secret": env("GITHUB_CLIENT_SECRET"),
+            }
+        ],
+        "SCOPE": ["read:user", "user:email", "repo"],
+    }
+}
+SOCIALACCOUNT_STORE_TOKENS = True
+SOCIALACCOUNT_LOGIN_ON_GET = True
+
+LOGIN_REDIRECT_URL = f"{FRONTEND_URL}/dashboard"
+ACCOUNT_LOGOUT_REDIRECT_URL = f"{FRONTEND_URL}/login"
+LOGIN_URL = f"{FRONTEND_URL}/login"
