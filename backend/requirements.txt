@@ -18,3 +18,9 @@ requests==2.34.2
 sqlparse==0.6.0
 tzdata==2026.5
 urllib3==2.8.0
+
+# Environment variable management
+python-decouple==3.8
+
+# Production server
+gunicorn==21.2.0
