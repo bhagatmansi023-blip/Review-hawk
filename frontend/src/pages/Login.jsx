@@ -1,20 +1,71 @@
-import { useState } from 'react';
-import { Shield, Lock, Info } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
+import { Shield, Lock, AlertCircle, RotateCw, X } from 'lucide-react';
 import FeatureHighlights from '../components/auth/FeatureHighlights';
 import GitHubLoginButton from '../components/auth/GitHubLoginButton';
 import ThemeToggle from '../components/common/ThemeToggle';
-import BackendStatusModal from '../components/common/BackendStatusModal';
 import hawkLogo from '../assets/hawk-logo.jpg';
-import authService from '../services/auth';
+import { useAuth } from '../context/useAuth';
 
 export default function Login() {
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { isAuthenticated, login, authError, setAuthError } = useAuth();
+
+  const [isInitiating, setIsInitiating] = useState(false);
+  const [localError, setLocalError] = useState(() => {
+    const errorParam = searchParams.get('error');
+    const errorDesc = searchParams.get('error_description');
+    if (!errorParam) return null;
+    if (errorParam === 'access_denied') {
+      return 'GitHub authorization was declined. Please try again to connect CodeHawk.';
+    } else if (errorParam === 'backend_unavailable') {
+      return 'Unable to connect to the CodeHawk authentication backend.';
+    }
+    return errorDesc || `Authentication failed (${errorParam}).`;
+  });
+
+  // If already authenticated, redirect to target or /dashboard
+  useEffect(() => {
+    if (isAuthenticated) {
+      const target = location.state?.from?.pathname || '/dashboard';
+      navigate(target, { replace: true });
+    }
+  }, [isAuthenticated, navigate, location]);
+
+  // Clean up URL query parameters if present
+  useEffect(() => {
+    if (searchParams.has('error') || searchParams.has('error_description')) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('error');
+      nextParams.delete('error_description');
+      setSearchParams(nextParams, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   const handleGitHubClick = async () => {
-    // Initiate login via auth service
-    await authService.initiateGitHubLogin();
-    // In Phase 1, open the integration modal to inform developer about backend status
-    setIsModalOpen(true);
+    if (isInitiating) return;
+    setIsInitiating(true);
+    setLocalError(null);
+    if (setAuthError) setAuthError(null);
+
+    try {
+      await login();
+    } catch (err) {
+      setLocalError(
+        err.message ||
+        'Could not initiate GitHub login. Ensure your backend server is running at http://localhost:8000.'
+      );
+      setIsInitiating(false);
+    }
+  };
+
+  const activeError = localError || authError;
+
+  const handleDismissError = () => {
+    setLocalError(null);
+    if (setAuthError) setAuthError(null);
   };
 
   return (
@@ -31,59 +82,67 @@ export default function Login() {
 
           <div className="auth-card-header">
             <div className="auth-card-avatar">
-              <img src={hawkLogo} alt="Review Hawk" />
+              <img src={hawkLogo} alt="CodeHawk" />
             </div>
-            <h2 className="auth-card-title">Welcome to Review Hawk</h2>
+            <h2 className="auth-card-title">Review code smarter.</h2>
             <p className="auth-card-subtitle">
-              Sign in to connect your GitHub repositories and start automated AI code reviews.
+              Sign in with your GitHub account to connect repositories and run automated AI reviews on every pull request.
             </p>
           </div>
 
+          {/* Error & Retry Banner */}
+          {activeError && (
+            <div className="auth-error-banner" role="alert">
+              <div className="auth-error-icon">
+                <AlertCircle size={18} />
+              </div>
+              <div className="auth-error-content">
+                <p className="auth-error-text">{activeError}</p>
+                <div className="auth-error-actions">
+                  <button
+                    type="button"
+                    className="btn-error-retry"
+                    onClick={handleGitHubClick}
+                    disabled={isInitiating}
+                  >
+                    <RotateCw size={12} />
+                    <span>Retry Login</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-error-dismiss"
+                    onClick={handleDismissError}
+                    aria-label="Dismiss error"
+                  >
+                    <X size={12} />
+                    <span>Dismiss</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* GitHub Action CTA */}
-          <GitHubLoginButton onInitiateLogin={handleGitHubClick} />
+          <GitHubLoginButton
+            onInitiateLogin={handleGitHubClick}
+            isLoading={isInitiating}
+            disabled={isInitiating}
+          />
 
           {/* Trust & Compliance Pills */}
           <div className="trust-badges">
             <div className="trust-item">
               <Shield size={14} />
-              <span>Read-only PR scopes</span>
+              <span>Granular repository access</span>
             </div>
             <div className="trust-item">
               <Lock size={14} />
-              <span>OAuth 2.0 Security</span>
+              <span>OAuth 2.0 Handshake</span>
             </div>
           </div>
 
-          {/* Backend Contract Status Banner */}
-          <aside className="backend-status-card" aria-label="Backend Integration Status">
-            <div className="status-header">
-              <span>Backend OAuth Status</span>
-              <span className="status-tag">
-                <Info size={12} />
-                <span>Awaiting Django Endpoints</span>
-              </span>
-            </div>
-            <p className="status-text">
-              Frontend OAuth UI and service integration points are prepared. Secure client credentials will be managed by the Django backend.
-            </p>
-            <div className="status-actions">
-              <button
-                type="button"
-                className="btn-text-action"
-                onClick={() => setIsModalOpen(true)}
-              >
-                View Backend Contract & Routes
-              </button>
-            </div>
-          </aside>
         </div>
       </section>
-
-      {/* Backend Status & Route Navigation Modal */}
-      <BackendStatusModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-      />
     </div>
   );
 }

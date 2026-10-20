@@ -1,4 +1,4 @@
-import { Settings as SettingsIcon, Clock, Sliders, Bell, Key } from 'lucide-react';
+import { Clock, Sliders, Bell, Key } from 'lucide-react';
 
 export default function Settings() {
   return (
@@ -7,7 +7,7 @@ export default function Settings() {
         <div>
           <h1 className="placeholder-title">Settings</h1>
           <p className="placeholder-desc">
-            Configure Review Hawk workspace preferences, GitHub tokens, webhook secrets, and notifications.
+            Configure CodeHawk workspace preferences, GitHub tokens, webhook secrets, and notifications.
           </p>
         </div>
         <span className="placeholder-badge">

@@ -21,7 +21,7 @@ export default function Analytics() {
           Engineering Quality Analytics
         </h3>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.5 }}>
-          Engineering leaders and developers can track long-term code health improvements as Review Hawk runs continuous analysis across team repositories.
+          Engineering leaders and developers can track long-term code health improvements as CodeHawk runs continuous analysis across team repositories.
         </p>
 
         <div className="roadmap-list">

@@ -1,10 +1,11 @@
 /**
- * Base API Service for Review Hawk
+ * Base API Service for CodeHawk
  * 
  * Provides centralized HTTP communication with the Django REST Framework backend.
+ * Includes credentials handling for Django session cookies and CSRF tokens.
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/+$/, '');
 
 class ApiService {
   constructor() {
@@ -12,8 +13,16 @@ class ApiService {
   }
 
   /**
-   * Helper to retrieve auth headers (JWT or Token)
-   * Designed to be populated once backend authentication is established.
+   * Helper to retrieve CSRF token from browser cookies if set by Django
+   */
+  getCsrfToken() {
+    if (typeof document === 'undefined') return null;
+    const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  /**
+   * Helper to retrieve auth headers (JWT, Bearer token, and CSRF)
    */
   getHeaders(customHeaders = {}) {
     const headers = {
@@ -22,21 +31,29 @@ class ApiService {
       ...customHeaders,
     };
 
-    const token = localStorage.getItem('review_hawk_token');
+    // Check for Bearer token if token-based auth is in use
+    const token = localStorage.getItem('codehawk_token') || localStorage.getItem('review_hawk_token');
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    // Include Django CSRF token if present
+    const csrfToken = this.getCsrfToken();
+    if (csrfToken && !headers['X-CSRFToken']) {
+      headers['X-CSRFToken'] = csrfToken;
     }
 
     return headers;
   }
 
   /**
-   * Generic request handler
+   * Generic request handler with credentials support for Django session cookies
    */
   async request(endpoint, options = {}) {
     const url = `${this.baseUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
     
     const config = {
+      credentials: options.credentials || 'include',
       ...options,
       headers: this.getHeaders(options.headers),
     };
@@ -51,7 +68,10 @@ class ApiService {
         } catch {
           errorData = { detail: response.statusText };
         }
-        throw new Error(errorData?.detail || errorData?.message || `API error (${response.status})`);
+        const error = new Error(errorData?.detail || errorData?.message || `API error (${response.status})`);
+        error.status = response.status;
+        error.data = errorData;
+        throw error;
       }
 
       if (response.status === 204) {
@@ -60,7 +80,10 @@ class ApiService {
 
       return await response.json();
     } catch (error) {
-      console.warn(`[Review Hawk API] Request failed for ${url}:`, error.message);
+      // Avoid spamming warnings for expected unauthenticated 401/404 session checks
+      if (error.status !== 401 && error.status !== 404) {
+        console.warn(`[CodeHawk API] Request failed for ${url}:`, error.message);
+      }
       throw error;
     }
   }
@@ -73,8 +96,12 @@ class ApiService {
     return this.request(endpoint, {
       ...options,
       method: 'POST',
-      body: JSON.stringify(body),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     });
+  }
+
+  delete(endpoint, options = {}) {
+    return this.request(endpoint, { ...options, method: 'DELETE' });
   }
 }
 

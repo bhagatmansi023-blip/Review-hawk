@@ -1,55 +1,65 @@
-import { FolderGit2, Clock, Plus, GitFork } from 'lucide-react';
+import { useRepos } from '../context/useRepos';
+import RepoHeader from '../components/repos/RepoHeader';
+import RepoSearchFilter from '../components/repos/RepoSearchFilter';
+import RepoTable from '../components/repos/RepoTable';
+import RepoActionBanner from '../components/repos/RepoActionBanner';
+import RepoEmptyState from '../components/repos/RepoEmptyState';
+import RepoPermissionNotice from '../components/repos/RepoPermissionNotice';
+import RepoContractModal from '../components/repos/RepoContractModal';
 
 export default function Repositories() {
+  const {
+    repositories,
+    filteredRepositories,
+    isLoading,
+    error,
+    searchQuery,
+  } = useRepos();
+
+  const renderContent = () => {
+    // State 2: Loading
+    if (isLoading) {
+      return <RepoEmptyState type="loading" />;
+    }
+
+    // Backend missing endpoint state
+    if (error && error.isMissingEndpoint) {
+      return <RepoEmptyState type="missing_endpoint" />;
+    }
+
+    // State 4: No repositories returned from GitHub
+    if (repositories.length === 0) {
+      return <RepoEmptyState type="no_repos" />;
+    }
+
+    // State 6: Search with no matches
+    if (filteredRepositories.length === 0 && searchQuery) {
+      return <RepoEmptyState type="search_no_match" />;
+    }
+
+    // State 3 & 5: Repositories loaded or search with matches
+    return <RepoTable />;
+  };
+
   return (
-    <div className="placeholder-page">
-      <div className="placeholder-header">
-        <div>
-          <h1 className="placeholder-title">Repositories</h1>
-          <p className="placeholder-desc">
-            Manage your synchronized GitHub repositories, webhooks, and automated review policies.
-          </p>
-        </div>
-        <span className="placeholder-badge">
-          <Clock size={14} />
-          <span>Scheduled for Next Phase</span>
-        </span>
-      </div>
+    <div className="repo-page-container">
+      {/* Page Header */}
+      <RepoHeader />
 
-      <div className="placeholder-card">
-        <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-          Repository Synchronization Foundation
-        </h3>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.5 }}>
-          In the upcoming phase, this view will query the Django backend endpoint (<code>/api/repositories/</code>) to retrieve synchronized repositories from your connected GitHub account.
-        </p>
+      {/* Action and status notifications banner */}
+      <RepoActionBanner />
 
-        <div className="roadmap-list">
-          <div className="roadmap-card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-primary)', marginBottom: '4px' }}>
-              <Plus size={18} />
-              <h5>Repository Linking</h5>
-            </div>
-            <p>One-click repository import with granular permission selection for public and private codebases.</p>
-          </div>
+      {/* Search and filters bar */}
+      <RepoSearchFilter />
 
-          <div className="roadmap-card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-secondary)', marginBottom: '4px' }}>
-              <GitFork size={18} />
-              <h5>Webhook Management</h5>
-            </div>
-            <p>Automated GitHub webhook registration for instant PR event listening and triggers.</p>
-          </div>
+      {/* Main repository list or state */}
+      <section className="repo-list-section" aria-label="Repository List">
+        {renderContent()}
+      </section>
 
-          <div className="roadmap-card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#818cf8', marginBottom: '4px' }}>
-              <FolderGit2 size={18} />
-              <h5>Custom Rule Configuration</h5>
-            </div>
-            <p>Set custom review strictness, ignored files (.reviewhawkignore), and linter rules.</p>
-          </div>
-        </div>
-      </div>
+      {/* Modals */}
+      <RepoPermissionNotice />
+      <RepoContractModal />
     </div>
   );
 }

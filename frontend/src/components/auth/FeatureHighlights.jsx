@@ -6,55 +6,29 @@ export default function FeatureHighlights() {
     <div className="hero-showcase">
       <div className="brand-badge">
         <span className="brand-badge-dot" />
-        <span>AI-Powered Automated Code Review Platform</span>
+        <span>AI-Powered Automated Code Review Bot for GitHub</span>
       </div>
 
       <div className="hero-header">
         <div className="hawk-emblem-wrapper">
           <img
             src={hawkLogo}
-            alt="Review Hawk Emblem"
+            alt="CodeHawk Emblem"
             className="hawk-emblem-img"
           />
         </div>
         <div>
           <h1 className="brand-title">
-            Review <span>Hawk</span>
+            Code<span>Hawk</span>
           </h1>
           <p className="tagline">Sharp Eyes. Cleaner Code.</p>
         </div>
       </div>
 
       <p className="supporting-text">
-        AI-powered code reviews that help you catch bugs, improve code quality, and ship with confidence. Connect your GitHub repositories and get immediate automated feedback on every pull request.
+        Automate GitHub pull request reviews to help developers identify bugs, security concerns, and code-quality issues. Connect your repositories for instant, automated AI feedback on every pull request.
       </p>
 
-      {/* Terminal / Live PR Analysis Preview */}
-      <div className="code-preview-card">
-        <div className="code-preview-header">
-          <div className="window-dots">
-            <span className="window-dot dot-red" />
-            <span className="window-dot dot-yellow" />
-            <span className="window-dot dot-green" />
-          </div>
-          <span>hawk-review-engine v1.0.0</span>
-          <span>github-action:active</span>
-        </div>
-        <div className="code-preview-body">
-          <div className="terminal-line">
-            <span className="terminal-prompt">❯</span>
-            <span style={{ color: 'var(--text-primary)' }}>review-hawk analyze --pr 142 --repo acme/core-api</span>
-          </div>
-          <div className="terminal-line" style={{ color: 'var(--text-muted)' }}>
-            <span>Analyzing 8 files (+342, -58)...</span>
-          </div>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '4px' }}>
-            <span className="terminal-badge badge-pass">✓ Static Analysis: Passed</span>
-            <span className="terminal-badge badge-pass">✓ Security Audit: 0 High CVEs</span>
-            <span className="terminal-badge badge-warning">⚡ 2 Performance Recommendations</span>
-          </div>
-        </div>
-      </div>
 
       {/* Feature Value Props Grid */}
       <div className="feature-list">
@@ -64,7 +38,7 @@ export default function FeatureHighlights() {
           </div>
           <div>
             <h4>Automated PR Reviews</h4>
-            <p>Instant inline suggestions and actionable feedback right inside GitHub.</p>
+            <p>Inline review comments and actionable suggestions directly on GitHub diffs.</p>
           </div>
         </div>
 
@@ -74,7 +48,7 @@ export default function FeatureHighlights() {
           </div>
           <div>
             <h4>Security & Vulnerability</h4>
-            <p>Detect leaked secrets, injection vulnerabilities, and dependency flaws.</p>
+            <p>Catch leaked tokens, SQL injection risks, and risky dependencies before merge.</p>
           </div>
         </div>
 
@@ -84,7 +58,7 @@ export default function FeatureHighlights() {
           </div>
           <div>
             <h4>Bug & Anti-Pattern Catch</h4>
-            <p>Catch logic regressions, edge-case null pointers, and resource leaks early.</p>
+            <p>Detect logic flaws, unhandled exceptions, and edge-case null references.</p>
           </div>
         </div>
 
@@ -93,8 +67,8 @@ export default function FeatureHighlights() {
             <Zap size={20} />
           </div>
           <div>
-            <h4>Fast CI/CD Pipeline</h4>
-            <p>Frees up senior engineers from repetitive manual syntax reviews.</p>
+            <h4>Faster Merge Cycles</h4>
+            <p>Relieve engineering teams from repetitive manual syntax checks.</p>
           </div>
         </div>
       </div>

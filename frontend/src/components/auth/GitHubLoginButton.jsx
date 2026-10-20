@@ -1,16 +1,9 @@
-import { useState } from 'react';
-
-export default function GitHubLoginButton({ onInitiateLogin }) {
-  const [isLoading, setIsLoading] = useState(false);
-
-  const handleClick = async () => {
-    setIsLoading(true);
-    try {
-      if (onInitiateLogin) {
-        await onInitiateLogin();
-      }
-    } finally {
-      setIsLoading(false);
+export default function GitHubLoginButton({ onInitiateLogin, isLoading = false, disabled = false }) {
+  const handleClick = (e) => {
+    e.preventDefault();
+    if (isLoading || disabled) return;
+    if (onInitiateLogin) {
+      onInitiateLogin();
     }
   };
 
@@ -21,8 +14,9 @@ export default function GitHubLoginButton({ onInitiateLogin }) {
         id="btn-continue-github"
         className="github-btn"
         onClick={handleClick}
-        disabled={isLoading}
+        disabled={isLoading || disabled}
         aria-busy={isLoading}
+        aria-label="Continue with GitHub"
       >
         {isLoading ? (
           <>
@@ -46,8 +40,15 @@ export default function GitHubLoginButton({ onInitiateLogin }) {
         )}
       </button>
 
-      <p className="auth-disclaimer">
-        Authorize your GitHub account to access the repositories you choose to connect. We request only the minimal permissions required.
+      {/* Concise explanation requirement */}
+      <p className="auth-access-note">
+        GitHub access is required to connect your repositories and automatically analyze pull requests.
+      </p>
+
+      {/* Privacy and security scope note */}
+      <p className="auth-privacy-note">
+        <span className="privacy-badge">Security Note</span>
+        Access should be limited strictly to the repositories you choose to authorize. Permissions can be revoked at any time through your GitHub account settings.
       </p>
     </div>
   );
