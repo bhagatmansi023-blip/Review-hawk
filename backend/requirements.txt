@@ -24,3 +24,6 @@ python-decouple==3.8
 
 # Production server
 gunicorn==21.2.0
+
+# GitHub API client
+PyGithub==2.5.0
