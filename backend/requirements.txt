@@ -27,3 +27,10 @@ gunicorn==21.2.0
 
 # GitHub API client
 PyGithub==2.5.0
+
+# Google Gemini LLM
+google-generativeai>=0.8.0
+
+# Async task queue
+celery[redis]>=5.4.0
+redis>=5.0.0
