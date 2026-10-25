@@ -35,6 +35,19 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let isMounted = true;
 
+    // Check if token was provided in the OAuth redirect URL (e.g. /dashboard?token=...)
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlToken = urlParams.get('token');
+      if (urlToken) {
+        localStorage.setItem('codehawk_token', urlToken);
+        urlParams.delete('token');
+        const remaining = urlParams.toString();
+        const cleanPath = window.location.pathname + (remaining ? `?${remaining}` : '');
+        window.history.replaceState({}, document.title, cleanPath);
+      }
+    }
+
     authService.getCurrentUser()
       .then((currentUser) => {
         if (!isMounted) return;

@@ -31,7 +31,7 @@ SECRET_KEY = 'django-insecure-qzbs^5z)-m((09^9!uddn&84l3cg70(^=$efdwcnq*sow5y_j6
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", "*"]
 
 
 # Application definition
@@ -57,6 +57,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -64,6 +65,19 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     "allauth.account.middleware.AccountMiddleware",
 ]
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+CORS_ALLOW_CREDENTIALS = True
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_HTTPONLY = True
+
 
 ROOT_URLCONF = 'config.urls'
 
@@ -173,6 +187,7 @@ SOCIALACCOUNT_PROVIDERS = {
 SOCIALACCOUNT_STORE_TOKENS = True
 SOCIALACCOUNT_LOGIN_ON_GET = True
 
+ACCOUNT_ADAPTER = "repos.adapters.CustomAccountAdapter"
 LOGIN_REDIRECT_URL = f"{FRONTEND_URL}/dashboard"
 ACCOUNT_LOGOUT_REDIRECT_URL = f"{FRONTEND_URL}/login"
 LOGIN_URL = f"{FRONTEND_URL}/login"
