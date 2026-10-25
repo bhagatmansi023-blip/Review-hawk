@@ -1,4 +1,4 @@
-import { Search, X, RotateCw, Filter } from 'lucide-react';
+import { Search, X, RotateCw, Filter, FolderGit2 } from 'lucide-react';
 import { useRepos } from '../../context/useRepos';
 
 export default function RepoSearchFilter() {
@@ -11,12 +11,29 @@ export default function RepoSearchFilter() {
     setFilterConnected,
     filteredRepositories,
     repositories,
+    selectedRepo,
+    selectRepo,
+    clearSelection,
     fetchRepositories,
     isLoading,
   } = useRepos();
 
   const handleClearSearch = () => {
     setSearchQuery('');
+  };
+
+  const currentSelectedId = selectedRepo ? String(selectedRepo.github_repo_id || selectedRepo.id) : '';
+
+  const handleDropdownSelect = (e) => {
+    const val = e.target.value;
+    if (!val) {
+      clearSelection();
+    } else {
+      const match = repositories.find((r) => String(r.github_repo_id || r.id) === String(val));
+      if (match) {
+        selectRepo(match);
+      }
+    }
   };
 
   return (
@@ -45,6 +62,33 @@ export default function RepoSearchFilter() {
             </button>
           )}
         </div>
+
+        {/* Dropdown selector for repositories on page */}
+        {repositories.length > 0 && (
+          <div className="repo-page-select-wrapper">
+            <FolderGit2 size={15} className="repo-select-icon" aria-hidden="true" />
+            <select
+              id="repo-page-selector"
+              className="repo-page-select-dropdown"
+              value={currentSelectedId}
+              onChange={handleDropdownSelect}
+              aria-label="Select from repositories on my page"
+            >
+              <option value="">-- Select from repositories on page --</option>
+              {repositories.map((repo) => {
+                const rId = String(repo.github_repo_id || repo.id);
+                const owner = typeof repo.owner === 'object' ? repo.owner?.login : repo.owner;
+                const fName = repo.full_name || `${owner}/${repo.name}`;
+                const isConn = Boolean(repo.registered || repo.is_connected || repo.is_enabled);
+                return (
+                  <option key={rId} value={rId}>
+                    {fName} {isConn ? '✓ (Connected)' : ''}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+        )}
 
         {/* Refresh action */}
         <button
@@ -116,14 +160,10 @@ export default function RepoSearchFilter() {
           </button>
         </div>
 
-        {/* Count summary */}
-        <div className="repo-count-badge">
+        {/* Results Count Counter */}
+        <div className="filter-results-counter">
           <span>
-            {repositories.length > 0 ? (
-              <>Showing <strong>{filteredRepositories.length}</strong> of {repositories.length}</>
-            ) : (
-              '0 repositories'
-            )}
+            Showing <strong>{filteredRepositories.length}</strong> of {repositories.length} repositories
           </span>
         </div>
       </div>

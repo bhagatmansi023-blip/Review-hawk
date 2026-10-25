@@ -48,9 +48,9 @@ export default function RepoHeader() {
 
       <div className="repo-header-main">
         <div className="repo-title-group">
-          <h1 className="repo-page-title">Connect a Repository</h1>
+          <h1 className="repo-page-title">Repositories</h1>
           <p className="repo-page-description">
-            Choose a GitHub repository to enable automated pull request reviews. CodeHawk will analyze incoming diffs for bugs, security concerns, and code quality.
+            Connect GitHub repositories to enable automated code reviews.
           </p>
         </div>
 

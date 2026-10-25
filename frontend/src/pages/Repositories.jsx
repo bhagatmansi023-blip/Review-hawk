@@ -17,14 +17,19 @@ export default function Repositories() {
   } = useRepos();
 
   const renderContent = () => {
-    // State 2: Loading
+    // State 1: Loading
     if (isLoading) {
       return <RepoEmptyState type="loading" />;
     }
 
-    // Backend missing endpoint state
-    if (error && error.isMissingEndpoint) {
-      return <RepoEmptyState type="missing_endpoint" />;
+    // State 2: Error state (API unavailable or error response with retry)
+    if (error) {
+      return <RepoEmptyState type="error" />;
+    }
+
+    // State 3: Search with no matches
+    if (filteredRepositories.length === 0 && searchQuery) {
+      return <RepoEmptyState type="search_no_match" />;
     }
 
     // State 4: No repositories returned from GitHub
@@ -32,12 +37,7 @@ export default function Repositories() {
       return <RepoEmptyState type="no_repos" />;
     }
 
-    // State 6: Search with no matches
-    if (filteredRepositories.length === 0 && searchQuery) {
-      return <RepoEmptyState type="search_no_match" />;
-    }
-
-    // State 3 & 5: Repositories loaded or search with matches
+    // State 5: Repositories loaded with matches
     return <RepoTable />;
   };
 
@@ -49,7 +49,7 @@ export default function Repositories() {
       {/* Action and status notifications banner */}
       <RepoActionBanner />
 
-      {/* Search and filters bar */}
+      {/* Search, page dropdown, and filters bar */}
       <RepoSearchFilter />
 
       {/* Main repository list or state */}

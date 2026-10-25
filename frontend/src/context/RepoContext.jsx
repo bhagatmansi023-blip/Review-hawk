@@ -61,7 +61,7 @@ export function RepoProvider({ children }) {
   const [isContractModalOpen, setIsContractModalOpen] = useState(false);
   const [isPermissionModalOpen, setIsPermissionModalOpen] = useState(false);
 
-  // Fetch repositories from backend
+  // Fetch repositories from real Django backend
   const fetchRepositories = useCallback(async () => {
     if (!isAuthenticated) {
       setRepositories([]);
@@ -73,22 +73,15 @@ export function RepoProvider({ children }) {
     setError(null);
 
     try {
-      // Parallel fetch for available and already connected repos
-      const [available, connected] = await Promise.allSettled([
-        repoService.getRepositories(),
-        repoService.getConnectedRepositories(),
-      ]);
+      const repos = await repoService.getRepositories();
+      setRepositories(repos);
 
-      if (available.status === 'fulfilled') {
-        setRepositories(available.value);
-      } else {
-        // Capture error from repos endpoint
-        setError(available.reason);
-      }
-
-      if (connected.status === 'fulfilled') {
-        setConnectedRepos(connected.value);
-      }
+      // Determine connected repos directly from backend response:
+      // In DRF ListGitHubReposView, `registered` indicates tracked in database with webhook
+      const connected = repos.filter(
+        (r) => Boolean(r.registered || r.is_enabled || r.is_connected)
+      );
+      setConnectedRepos(connected);
     } catch (err) {
       setError(err);
     } finally {
@@ -103,44 +96,22 @@ export function RepoProvider({ children }) {
     }
 
     let isMounted = true;
-
-    Promise.resolve()
-      .then(() => {
-        if (isMounted) setIsLoading(true);
-        return Promise.allSettled([
-          repoService.getRepositories(),
-          repoService.getConnectedRepositories(),
-        ]);
-      })
-      .then(([available, connected]) => {
-        if (!isMounted) return;
-        if (available.status === 'fulfilled') {
-          setRepositories(available.value);
-        } else {
-          setError(available.reason);
-        }
-
-        if (connected.status === 'fulfilled') {
-          setConnectedRepos(connected.value);
-        }
-        setIsLoading(false);
-      })
-      .catch((err) => {
-        if (!isMounted) return;
-        setError(err);
-        setIsLoading(false);
-      });
+    Promise.resolve().then(() => {
+      if (isMounted) {
+        fetchRepositories();
+      }
+    });
 
     return () => {
       isMounted = false;
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, fetchRepositories]);
 
   // Select a repository for connection
   const selectRepo = useCallback((repo) => {
     setSelectedRepo((prev) => {
       // Toggle off if clicking the already selected repo
-      if (prev && (prev.id === repo.id || prev.github_repo_id === repo.github_repo_id)) {
+      if (prev && ((prev.github_repo_id && prev.github_repo_id === repo.github_repo_id) || prev.id === repo.id)) {
         return null;
       }
       return repo;
@@ -164,30 +135,30 @@ export function RepoProvider({ children }) {
     try {
       const result = await repoService.connectRepository(selectedRepo);
 
-      // Successfully connected by backend confirmation
-      const connectedItem = result || {
+      const targetId = Number(selectedRepo.github_repo_id || selectedRepo.id);
+      const connectedItem = {
         ...selectedRepo,
+        ...(typeof result === 'object' ? result : {}),
+        registered: true,
         is_connected: true,
         is_enabled: true,
       };
 
       setConnectedRepos((prev) => {
-        const exists = prev.some(
-          (r) => (r.github_repo_id || r.id) === (connectedItem.github_repo_id || connectedItem.id)
-        );
+        const exists = prev.some((r) => Number(r.github_repo_id || r.id) === targetId);
         return exists ? prev : [connectedItem, ...prev];
       });
 
-      // Update repositories list to mark as connected
+      // Update repositories list to mark as connected/registered
       setRepositories((prev) =>
         prev.map((r) =>
-          (r.github_repo_id || r.id) === (connectedItem.github_repo_id || connectedItem.id)
-            ? { ...r, is_connected: true, is_enabled: true }
+          Number(r.github_repo_id || r.id) === targetId
+            ? { ...r, registered: true, is_connected: true, is_enabled: true }
             : r
         )
       );
 
-      const repoName = selectedRepo.full_name || `${selectedRepo.owner?.login || selectedRepo.owner}/${selectedRepo.name}`;
+      const repoName = selectedRepo.full_name || `${typeof selectedRepo.owner === 'object' ? selectedRepo.owner?.login : selectedRepo.owner}/${selectedRepo.name}`;
       setSuccessMessage(`Repository "${repoName}" successfully connected! CodeHawk review bot is now enabled.`);
       setSelectedRepo(null);
     } catch (err) {
@@ -201,13 +172,15 @@ export function RepoProvider({ children }) {
   const disconnectRepo = useCallback(async (repoId) => {
     setIsConnecting(true);
     setError(null);
+    const targetId = Number(repoId);
+
     try {
-      await repoService.disconnectRepository(repoId);
-      setConnectedRepos((prev) => prev.filter((r) => (r.github_repo_id || r.id) !== repoId));
+      await repoService.disconnectRepository(targetId);
+      setConnectedRepos((prev) => prev.filter((r) => Number(r.github_repo_id || r.id) !== targetId));
       setRepositories((prev) =>
         prev.map((r) =>
-          (r.github_repo_id || r.id) === repoId
-            ? { ...r, is_connected: false, is_enabled: false }
+          Number(r.github_repo_id || r.id) === targetId
+            ? { ...r, registered: false, is_connected: false, is_enabled: false }
             : r
         )
       );
@@ -248,8 +221,9 @@ export function RepoProvider({ children }) {
 
       // 3. Connected status filter
       const isConnected = Boolean(
+        repo.registered ||
         repo.is_connected ||
-        connectedRepos.some((c) => (c.github_repo_id || c.id) === (repo.github_repo_id || repo.id))
+        connectedRepos.some((c) => Number(c.github_repo_id || c.id) === Number(repo.github_repo_id || repo.id))
       );
       if (filterConnected === 'connected' && !isConnected) return false;
       if (filterConnected === 'unconnected' && isConnected) return false;

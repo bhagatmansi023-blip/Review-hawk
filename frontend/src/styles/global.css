@@ -2854,8 +2854,119 @@ button {
   border-top: 1px solid var(--border-subtle);
 }
 
-/* Responsive queries for PR views */
+/* Repo Page Select Dropdown */
+.repo-page-select-wrapper {
+  display: flex;
+  align-items: center;
+  position: relative;
+  min-width: 260px;
+}
+
+.repo-select-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.repo-page-select-dropdown {
+  width: 100%;
+  padding: 8px 12px 8px 34px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 0.84rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+
+.repo-page-select-dropdown:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+}
+
+/* Repo Mobile Cards */
+.repo-desktop-table {
+  display: block;
+}
+
+.repo-mobile-card-list {
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.repo-mobile-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.repo-mobile-card:hover {
+  background: var(--bg-surface-hover);
+}
+
+.repo-mobile-card.card-selected {
+  outline: 2px solid var(--accent-primary);
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.repo-mobile-card.card-connected {
+  border-left: 3px solid #22c55e;
+}
+
+.repo-mobile-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.repo-mobile-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.repo-mobile-desc {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.repo-mobile-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Responsive queries for Repositories and PR views */
 @media (max-width: 860px) {
+  .repo-desktop-table {
+    display: none;
+  }
+  .repo-mobile-card-list {
+    display: flex;
+  }
+  .repo-search-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .repo-page-select-wrapper {
+    min-width: 100%;
+  }
   .pr-desktop-table {
     display: none;
   }
@@ -2883,5 +2994,6 @@ button {
     gap: 12px;
   }
 }
+
 
 

@@ -55,41 +55,57 @@ export default function RepoEmptyState({ type = 'no_repos' }) {
     );
   }
 
-  // Missing Endpoint or Backend Error State
-  if (error && error.isMissingEndpoint) {
+  // State 3: Error / API Unavailable State (with Retry action)
+  if (type === 'error' || error) {
+    const isMissingEndpoint = error?.isMissingEndpoint || error?.status === 404;
     return (
-      <div className="repo-empty-card repo-missing-endpoint" role="status">
-        <div className="empty-icon-box icon-warning">
+      <div className="repo-empty-card repo-error-card" role="alert">
+        <div className="empty-icon-box" style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444' }}>
           <AlertCircle size={28} />
         </div>
-        <h3 className="empty-title">Backend Repository Endpoints Pending</h3>
+        <h3 className="empty-title">
+          {isMissingEndpoint ? 'Backend Repository Endpoint Pending' : 'Unable to Load Repositories'}
+        </h3>
         <p className="empty-desc">
-          The Django REST Framework backend does not yet serve <code>GET /api/repos/</code>.
-          Our team is developing the backend and frontend together. You can inspect the required endpoint specifications below.
+          {error?.message ||
+            'Could not retrieve repositories from the backend server. Ensure the Django server is running and accessible at http://localhost:8000.'}
         </p>
-        <div className="empty-actions">
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={fetchRepositories}
-          >
-            <RotateCw size={14} />
-            <span>Retry Fetch</span>
-          </button>
+        <div className="empty-actions" style={{ display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
           <button
             type="button"
             className="btn-primary"
-            onClick={() => setIsContractModalOpen(true)}
+            onClick={fetchRepositories}
+            disabled={isLoading}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
           >
-            <FileCode size={14} />
-            <span>View Required API Contract</span>
+            <RotateCw size={14} className={isLoading ? 'spin-icon' : ''} />
+            <span>Retry Connection</span>
           </button>
+
+          {error?.status === 401 && (
+            <Link to="/login" className="btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+              <LogIn size={14} />
+              <span>Sign In with GitHub</span>
+            </Link>
+          )}
+
+          {isMissingEndpoint && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setIsContractModalOpen(true)}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+            >
+              <FileCode size={14} />
+              <span>View API Contract</span>
+            </button>
+          )}
         </div>
       </div>
     );
   }
 
-  // State 6: Search with no matching results
+  // State 4: Search with no matching results
   if (type === 'search_no_match') {
     return (
       <div className="repo-empty-card" role="status">
@@ -117,7 +133,7 @@ export default function RepoEmptyState({ type = 'no_repos' }) {
     );
   }
 
-  // State 4: No repositories available
+  // State 5: No repositories returned from GitHub
   return (
     <div className="repo-empty-card" role="status">
       <div className="empty-icon-box">
@@ -127,13 +143,15 @@ export default function RepoEmptyState({ type = 'no_repos' }) {
       <p className="empty-desc">
         No GitHub repositories were returned for your account. Ensure you have created repositories on GitHub or granted repository access to CodeHawk.
       </p>
-      <div className="empty-actions">
+      <div className="empty-actions" style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
         <button
           type="button"
           className="btn-secondary"
           onClick={fetchRepositories}
+          disabled={isLoading}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
         >
-          <RotateCw size={14} />
+          <RotateCw size={14} className={isLoading ? 'spin-icon' : ''} />
           <span>Refresh</span>
         </button>
         <a
