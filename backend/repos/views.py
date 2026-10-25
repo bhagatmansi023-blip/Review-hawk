@@ -94,7 +94,13 @@ class ListGitHubReposView(APIView):
 
 class RegisterWebhookView(APIView):
     """
-    Register a PR/push webhook on one or more GitHub repos and persist them.
+    Enable AI reviews for one or more GitHub repos.
+
+    NOTE: This app uses a GitHub App, which delivers webhook events via a
+    single centrally-configured webhook URL (set in the GitHub App settings).
+    There is no need — and no permission — to create per-repo webhooks via
+    the API.  This view simply registers the repo in the local DB and marks
+    it as enabled so the webhook handler knows to review its PRs.
 
     Request body (JSON):
         {
@@ -103,22 +109,11 @@ class RegisterWebhookView(APIView):
                 ...
             ]
         }
-
-    For each entry:
-    - Creates (or retrieves) the local Repository row.
-    - Calls the GitHub API to create the webhook if one is not already stored.
-    - Saves the returned webhook_id and sets is_enabled=True.
     """
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not WEBHOOK_URL:
-            return Response(
-                {"detail": "WEBHOOK_URL is not configured on the server."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
         repos_input = request.data.get("repos", [])
         if not repos_input:
             return Response(
@@ -150,7 +145,7 @@ class RegisterWebhookView(APIView):
                 )
                 continue
 
-            # ── Fetch from GitHub ──────────────────────────────────────────
+            # ── Fetch repo metadata from GitHub ────────────────────────────
             try:
                 gh_repo = gh.get_repo(f"{owner}/{name}")
             except GithubException as exc:
@@ -164,8 +159,8 @@ class RegisterWebhookView(APIView):
                 )
                 continue
 
-            # ── Get-or-create the local DB row ─────────────────────────────
-            db_repo, _ = Repository.objects.get_or_create(
+            # ── Get-or-create the local DB row, mark enabled ───────────────
+            db_repo, created = Repository.objects.get_or_create(
                 github_repo_id=github_repo_id,
                 defaults={
                     "user": request.user,
@@ -173,62 +168,21 @@ class RegisterWebhookView(APIView):
                     "name": name,
                     "default_branch": gh_repo.default_branch or "main",
                     "is_private": gh_repo.private,
+                    "is_enabled": True,
                 },
             )
 
-            # ── Register webhook if not already done ───────────────────────
-            if db_repo.webhook_id:
-                # Already registered — just make sure it's enabled
+            if not created:
                 db_repo.is_enabled = True
                 db_repo.save(update_fields=["is_enabled", "updated_at"])
-                results.append(
-                    {
-                        "full_name": f"{owner}/{name}",
-                        "success": True,
-                        "detail": "Webhook already registered.",
-                        "repo": RepositorySerializer(db_repo).data,
-                    }
-                )
-                continue
 
-            hook_config = {
-                "url": WEBHOOK_URL,
-                "content_type": "json",
-                "insecure_ssl": "0",
-            }
-            if GITHUB_WEBHOOK_SECRET:
-                hook_config["secret"] = GITHUB_WEBHOOK_SECRET
-
-            try:
-                hook = gh_repo.create_hook(
-                    name="web",
-                    config=hook_config,
-                    events=["pull_request", "push"],
-                    active=True,
-                )
-            except GithubException as exc:
-                logger.error(
-                    "Failed to create webhook for %s/%s: %s", owner, name, exc
-                )
-                results.append(
-                    {
-                        "full_name": f"{owner}/{name}",
-                        "success": False,
-                        "detail": f"Webhook creation failed: {exc.data.get('message', str(exc))}",
-                    }
-                )
-                continue
-
-            db_repo.webhook_id = hook.id
-            db_repo.is_enabled = True
-            db_repo.save(update_fields=["webhook_id", "is_enabled", "updated_at"])
-
-            logger.info("Registered webhook %s for %s/%s", hook.id, owner, name)
+            detail = "Repository registered for AI review." if created else "Repository re-enabled for AI review."
+            logger.info("%s %s/%s", detail, owner, name)
             results.append(
                 {
                     "full_name": f"{owner}/{name}",
                     "success": True,
-                    "detail": "Webhook registered successfully.",
+                    "detail": detail,
                     "repo": RepositorySerializer(db_repo).data,
                 }
             )
@@ -244,9 +198,12 @@ class RegisterWebhookView(APIView):
 
 class UnregisterWebhookView(APIView):
     """
-    Remove the webhook from GitHub and mark the repo as disabled.
+    Disable AI reviews for a repo and remove it from tracking.
 
-    The local Repository row is kept so history is preserved.
+    NOTE: With a GitHub App, there is no per-repo webhook to delete — the
+    App's central webhook continues to receive events.  We simply mark the
+    repo as disabled so the webhook handler ignores its PR events.
+    The local Repository row is kept so review history is preserved.
     """
 
     permission_classes = [IsAuthenticated]
@@ -261,27 +218,11 @@ class UnregisterWebhookView(APIView):
                 {"detail": "Repository not found."}, status=status.HTTP_404_NOT_FOUND
             )
 
-        if db_repo.webhook_id:
-            gh = _get_github_client(request.user)
-            if gh:
-                try:
-                    gh_repo = gh.get_repo(db_repo.full_name)
-                    hook = gh_repo.get_hook(db_repo.webhook_id)
-                    hook.delete()
-                    logger.info(
-                        "Deleted webhook %s for %s", db_repo.webhook_id, db_repo.full_name
-                    )
-                except GithubException as exc:
-                    # Log but don't fail — the webhook may already be gone
-                    logger.warning(
-                        "Could not delete webhook %s: %s", db_repo.webhook_id, exc
-                    )
-
-        db_repo.webhook_id = None
         db_repo.is_enabled = False
-        db_repo.save(update_fields=["webhook_id", "is_enabled", "updated_at"])
+        db_repo.save(update_fields=["is_enabled", "updated_at"])
+        logger.info("Disabled AI reviews for %s", db_repo.full_name)
 
         return Response(
-            {"detail": f"Webhook removed and {db_repo.full_name} disabled."},
+            {"detail": f"AI reviews disabled for {db_repo.full_name}."},
             status=status.HTTP_200_OK,
         )
