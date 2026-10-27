@@ -10,8 +10,10 @@ Responsibilities
 3. Parse the LLM JSON response into typed dataclasses.
 4. Map each LLM comment's (file_path, line_number) to a GitHub diff *position*
    so that comments can be posted as proper inline PR review comments.
-5. Persist findings to the DB (Review + ReviewComment rows).
-6. Post the review back to GitHub via the Checks/Pull-Requests API.
+5. Run tree-sitter static analysis on changed Python files.
+6. Merge & dedupe LLM + static findings (same line → keep static, note LLM agreement).
+7. Persist findings to the DB (Review + ReviewComment rows).
+8. Post the review back to GitHub via the Pull-Requests API.
 """
 
 from __future__ import annotations
@@ -135,6 +137,105 @@ def build_diff_position_map(raw_diff: str) -> dict[tuple[str, int], int]:
             new_line_number += 1
 
     return position_map
+
+
+def extract_changed_lines(raw_diff: str) -> dict[str, set[int]]:
+    """
+    Parse a unified diff and return a mapping:
+        file_path -> set of new-file line numbers that were ADDED in the PR.
+
+    Used to filter tree-sitter findings to only lines touched by this PR.
+    Context lines (unchanged) are intentionally excluded — only ``+`` lines
+    are considered "changed" for the purpose of static-analysis gating.
+    """
+    changed: dict[str, set[int]] = {}
+    current_file: str | None = None
+    new_line_number = 0
+
+    for raw_line in raw_diff.splitlines():
+        file_match = _DIFF_FILE_HEADER.match(raw_line)
+        if file_match:
+            current_file = file_match.group(1)
+            changed.setdefault(current_file, set())
+            new_line_number = 0
+            continue
+
+        if raw_line.startswith("--- ") or raw_line.startswith("+++ "):
+            continue
+
+        hunk_match = _HUNK_HEADER.match(raw_line)
+        if hunk_match:
+            new_line_number = int(hunk_match.group(1))
+            continue
+
+        if current_file is None:
+            continue
+
+        if raw_line.startswith("+"):
+            changed[current_file].add(new_line_number)
+            new_line_number += 1
+        elif raw_line.startswith("-"):
+            pass  # removed line — no new-file line number
+        else:
+            new_line_number += 1  # context line
+
+    return changed
+
+
+# ---------------------------------------------------------------------------
+# Merge & dedupe  (LLM + tree-sitter findings)
+# ---------------------------------------------------------------------------
+
+
+def merge_and_dedupe(
+    llm_comments: list["LLMComment"],
+    static_findings: list,
+) -> tuple[list["LLMComment"], list]:
+    """
+    Merge LLM and tree-sitter findings, deduplicating by (file_path, line_number).
+
+    Strategy
+    --------
+    - If both flag the **same line**: keep the tree-sitter finding (deterministic,
+      rule-based) and append ``[LLM also flagged]`` to its message.  Drop the
+      duplicate LLM comment for that line.
+    - Lines flagged only by LLM → kept as-is.
+    - Lines flagged only by tree-sitter → kept as-is.
+
+    Returns
+    -------
+    (filtered_llm_comments, annotated_static_findings)
+    """
+    # Build lookup: lines covered by static findings
+    static_keys: set[tuple[str, int]] = {
+        (f.file_path, f.line_number) for f in static_findings
+    }
+    llm_keys: set[tuple[str, int]] = {
+        (c.file_path, c.line_number) for c in llm_comments
+    }
+
+    # Annotate static findings confirmed by the LLM
+    annotated_static: list = []
+    for finding in static_findings:
+        key = (finding.file_path, finding.line_number)
+        if key in llm_keys:
+            finding.message += "  \u26a0\ufe0f *LLM also flagged this line.*"
+        annotated_static.append(finding)
+
+    # Drop LLM comments that duplicate a static finding on the same line
+    filtered_llm = [
+        c for c in llm_comments
+        if (c.file_path, c.line_number) not in static_keys
+    ]
+
+    logger.info(
+        "merge_and_dedupe: %d LLM + %d static → %d LLM kept, %d static kept",
+        len(llm_comments),
+        len(static_findings),
+        len(filtered_llm),
+        len(annotated_static),
+    )
+    return filtered_llm, annotated_static
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +473,7 @@ def _post_github_review(
     pr_number: int,
     head_sha: str,
     result: LLMReviewResult,
+    static_findings: list,
     position_map: dict[tuple[str, int], int],
 ) -> int:
     """
@@ -382,40 +484,46 @@ def _post_github_review(
     gh_repo = gh.get_repo(repo.full_name)
     gh_pr = gh_repo.get_pull(pr_number)
 
-    # Build the inline comment list — only for positions we can map
+    # Build inline comments from LLM findings
     inline_comments = []
     skipped = 0
     for comment in result.comments:
         pos = position_map.get((comment.file_path, comment.line_number))
         if pos is None:
-            # Line not in diff — post as a general body note instead
             skipped += 1
             continue
-
         body = f"**[{comment.severity.upper()}]** {comment.message}"
         if comment.suggestion:
             body += f"\n\n> **Suggestion:** {comment.suggestion}"
+        inline_comments.append({"path": comment.file_path, "position": pos, "body": body})
 
-        inline_comments.append(
-            {
-                "path": comment.file_path,
-                "position": pos,
-                "body": body,
-            }
+    # Build inline comments from tree-sitter static findings
+    static_skipped = 0
+    for finding in static_findings:
+        pos = position_map.get((finding.file_path, finding.line_number))
+        if pos is None:
+            static_skipped += 1
+            continue
+        icon = {"error": "🔴", "warning": "🟡", "info": "🔵"}.get(finding.severity, "🔵")
+        body = (
+            f"{icon} **[{finding.rule_id}]** {finding.message}"
         )
+        if finding.suggestion:
+            body += f"\n\n> **Fix:** {finding.suggestion}"
+        inline_comments.append({"path": finding.file_path, "position": pos, "body": body})
 
-    if skipped:
+    if skipped + static_skipped:
         logger.info(
-            "%d comment(s) skipped — line not present in diff (will appear in summary only)",
-            skipped,
+            "%d LLM + %d static comment(s) skipped — line not in diff",
+            skipped, static_skipped,
         )
 
-    # Build the review body (summary + score + security flags)
+    # Build review body
     review_body_parts = [
-        f"## Review-hawk AI Review",
-        f"",
+        "## Review-hawk AI Review",
+        "",
         f"**Score:** {result.score:.0f}/10",
-        f"",
+        "",
         result.summary,
     ]
 
@@ -426,16 +534,27 @@ def _post_github_review(
             *[f"- {flag}" for flag in result.security_flags],
         ]
 
-    if skipped:
+    if static_findings:
         review_body_parts += [
             "",
-            f"*{skipped} finding(s) could not be posted inline (lines not in diff) — see full report in the DB.*",
+            f"### 🔬 Static Analysis ({len(static_findings)} finding(s))",
+            "*Deterministic checks via tree-sitter — no AI guessing.*",
+        ]
+
+    if skipped + static_skipped:
+        review_body_parts += [
+            "",
+            f"*{skipped + static_skipped} finding(s) could not be posted inline (lines not in diff).*",
         ]
 
     review_body = "\n".join(review_body_parts)
 
     # Determine event type
-    has_errors = any(c.severity == "error" for c in result.comments) or bool(result.security_flags)
+    has_errors = (
+        any(c.severity == "error" for c in result.comments)
+        or any(f.severity == "error" for f in static_findings)
+        or bool(result.security_flags)
+    )
     event = "REQUEST_CHANGES" if has_errors else "COMMENT"
 
     review = gh_pr.create_review(
@@ -462,10 +581,12 @@ def run_review(review_id: int) -> None:
     ----
     1. Load the Review + PullRequest from DB.
     2. Fetch the PR diff from GitHub.
-    3. Build diff-position map.
+    3. Build diff-position map + extract changed lines per file.
     4. Call Gemini, parse the structured JSON response.
-    5. Persist Review + ReviewComment rows.
-    6. Post the GitHub pull request review.
+    5. Run tree-sitter static analysis on changed Python files.
+    6. Merge & dedupe LLM + static findings.
+    7. Persist Review + ReviewComment rows.
+    8. Post the GitHub pull request review.
     """
     try:
         review = Review.objects.select_related("pull_request__repository__user").get(
@@ -495,6 +616,8 @@ def run_review(review_id: int) -> None:
 
 def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     """Inner function — all failures bubble up to ``run_review``."""
+    import requests as http_requests
+    from reviews.tree_sitter_analyzer import analyze_python, TREE_SITTER_AVAILABLE
 
     # ── 1. Authenticate with GitHub ────────────────────────────────────────
     token = _get_installation_token(repo)
@@ -504,9 +627,6 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     gh_pr = gh_repo.get_pull(pr.number)
 
     # ── 2. Fetch PR diff ───────────────────────────────────────────────────
-    # PyGithub doesn't expose diff directly; use the raw comparison API.
-    import requests as http_requests
-
     diff_url = gh_pr.diff_url
     diff_resp = http_requests.get(
         diff_url,
@@ -519,12 +639,13 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     diff_resp.raise_for_status()
     raw_diff = diff_resp.text
 
-    # ── 3. Build diff-position map ─────────────────────────────────────────
+    # ── 3. Build diff-position map + extract changed lines per file ────────
     position_map = build_diff_position_map(raw_diff)
+    changed_lines_map = extract_changed_lines(raw_diff)  # {file_path: set[int]}
     logger.info(
-        "Diff-position map built: %d mappable positions across %d file(s)",
+        "Diff parsed: %d mappable positions, %d file(s) touched",
         len(position_map),
-        len({fp for fp, _ in position_map}),
+        len(changed_lines_map),
     )
 
     # ── 4. Call Gemini ─────────────────────────────────────────────────────
@@ -536,38 +657,67 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
         head_sha=review.head_sha,
         diff=raw_diff,
     )
-
     logger.info("Calling Gemini model=%s for review_id=%d …", GEMINI_MODEL, review.pk)
     raw_text, input_tokens, output_tokens = _call_gemini(user_prompt)
     logger.info(
-        "Gemini response received: %d input tokens, %d output tokens",
-        input_tokens,
-        output_tokens,
+        "Gemini response: %d input tokens, %d output tokens",
+        input_tokens, output_tokens,
     )
 
-    # ── 5. Parse the structured JSON response ──────────────────────────────
+    # ── 5. Parse the structured LLM response ──────────────────────────────
     result = _parse_llm_response(raw_text)
     result.raw_response = raw_text
     result.input_tokens = input_tokens
     result.output_tokens = output_tokens
 
-    # ── 6. Persist Review summary ──────────────────────────────────────────
+    # ── 6. Run tree-sitter static analysis on changed Python files ─────────
+    static_findings: list = []
+    if TREE_SITTER_AVAILABLE:
+        python_files = [
+            fp for fp in changed_lines_map
+            if fp.endswith(".py")
+        ]
+        logger.info(
+            "Running tree-sitter on %d changed Python file(s)", len(python_files)
+        )
+        for file_path in python_files:
+            try:
+                content_obj = gh_repo.get_contents(file_path, ref=review.head_sha)
+                source = content_obj.decoded_content.decode("utf-8", errors="replace")
+                changed = changed_lines_map.get(file_path, set())
+                findings = analyze_python(source, file_path, changed)
+                static_findings.extend(findings)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "tree-sitter analysis failed for %s: %s", file_path, exc
+                )
+    else:
+        logger.info("tree-sitter not available — skipping static analysis.")
+
+    # ── 7. Merge & dedupe  (LLM + static) ─────────────────────────────────
+    final_llm_comments, final_static = merge_and_dedupe(
+        result.comments, static_findings
+    )
+    result.comments = final_llm_comments  # replace with deduped list
+
+    # ── 8. Persist Review summary ──────────────────────────────────────────
+    all_files = (
+        {c.file_path for c in result.comments}
+        | {f.file_path for f in final_static}
+    )
     review.summary = result.summary
     review.llm_model = GEMINI_MODEL
     review.input_tokens = input_tokens
     review.output_tokens = output_tokens
-    review.files_reviewed = len({c.file_path for c in result.comments})
+    review.files_reviewed = len(all_files)
     review.save(
         update_fields=[
-            "summary",
-            "llm_model",
-            "input_tokens",
-            "output_tokens",
-            "files_reviewed",
+            "summary", "llm_model", "input_tokens",
+            "output_tokens", "files_reviewed",
         ]
     )
 
-    # ── 7. Persist ReviewComment rows ──────────────────────────────────────
+    # ── 9. Persist ReviewComment rows (LLM + static) ───────────────────────
     db_comments = []
     for comment in result.comments:
         db_comments.append(
@@ -582,21 +732,39 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
                 source=ReviewComment.Source.LLM,
             )
         )
+    for finding in final_static:
+        db_comments.append(
+            ReviewComment(
+                review=review,
+                file_path=finding.file_path,
+                line_number=finding.line_number,
+                severity=finding.severity,
+                category=finding.category,
+                message=finding.message,
+                suggestion=finding.suggestion,
+                source=ReviewComment.Source.STATIC,
+                rule_id=finding.rule_id,
+            )
+        )
     ReviewComment.objects.bulk_create(db_comments)
-    logger.info("Saved %d ReviewComment(s) to DB", len(db_comments))
+    logger.info(
+        "Saved %d ReviewComment(s) to DB (%d LLM, %d static)",
+        len(db_comments), len(result.comments), len(final_static),
+    )
 
-    # ── 8. Post GitHub PR Review ───────────────────────────────────────────
+    # ── 10. Post GitHub PR Review ──────────────────────────────────────────
     github_review_id = _post_github_review(
         gh=gh,
         repo=pr.repository,
         pr_number=pr.number,
         head_sha=review.head_sha,
         result=result,
+        static_findings=final_static,
         position_map=position_map,
     )
     logger.info("Posted GitHub PR review id=%d", github_review_id)
 
-    # ── 9. Mark complete ───────────────────────────────────────────────────
+    # ── 11. Mark complete ──────────────────────────────────────────────────
     review.status = Review.Status.COMPLETED
     review.github_review_id = github_review_id
     review.finished_at = datetime.now(tz=timezone.utc)

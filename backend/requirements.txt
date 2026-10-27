@@ -33,4 +33,13 @@ google-generativeai>=0.8.0
 
 # Async task queue
 celery[redis]>=5.4.0
-redis>=5.0.0
+redis>=5.0.0
+
+# Tree-sitter static analysis (Python grammar)
+tree-sitter>=0.22.0
+tree-sitter-python>=0.22.0
+
+# Testing
+pytest>=8.0.0
+pytest-django>=4.8.0
+
