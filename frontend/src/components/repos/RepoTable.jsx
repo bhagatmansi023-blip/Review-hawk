@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { GitBranch, Lock, Globe, Check, ExternalLink, CheckCircle2, GitPullRequest } from 'lucide-react';
+import { GitBranch, Lock, Globe, Check, ExternalLink, CheckCircle2, GitPullRequest, FolderOpen } from 'lucide-react';
 import { useRepos } from '../../context/useRepos';
 
 export default function RepoTable() {
@@ -65,7 +65,21 @@ export default function RepoTable() {
                   <td>
                     <div className="repo-info-cell">
                       <div className="repo-title-row">
-                        <span className="repo-name">{fullName}</span>
+                        {isConnected ? (
+                          <Link
+                            to={`/repositories/${repoId}`}
+                            className="repo-name repo-name-link"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (setActiveRepo) setActiveRepo(repo);
+                            }}
+                            title={`Open ${fullName} details`}
+                          >
+                            {fullName}
+                          </Link>
+                        ) : (
+                          <span className="repo-name">{fullName}</span>
+                        )}
                         {repo.html_url && (
                           <a
                             href={repo.html_url}
@@ -136,16 +150,16 @@ export default function RepoTable() {
                     {isConnected ? (
                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
                         <Link
-                          to={`/pull-requests?repo=${repoId}`}
+                          to={`/repositories/${repoId}`}
                           className="btn-table-prs"
                           onClick={(e) => {
                             e.stopPropagation();
                             if (setActiveRepo) setActiveRepo(repo);
                           }}
-                          title="View pull requests for this repository"
+                          title="View repository details and pull requests"
                         >
                           <GitPullRequest size={13} />
-                          <span>View PRs</span>
+                          <span>View Details</span>
                         </Link>
                         <button
                           type="button"
@@ -215,7 +229,20 @@ export default function RepoTable() {
             >
               <div className="repo-mobile-card-top">
                 <div className="repo-mobile-card-title-group">
-                  <span className="repo-mobile-name">{fullName}</span>
+                  {isConnected ? (
+                    <Link
+                      to={`/repositories/${repoId}`}
+                      className="repo-mobile-name repo-name-link"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (setActiveRepo) setActiveRepo(repo);
+                      }}
+                    >
+                      {fullName}
+                    </Link>
+                  ) : (
+                    <span className="repo-mobile-name">{fullName}</span>
+                  )}
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginTop: '4px' }}>
                     {isPrivate ? (
                       <span className="badge-visibility badge-private">
@@ -270,7 +297,7 @@ export default function RepoTable() {
                   {isConnected ? (
                     <>
                       <Link
-                        to={`/pull-requests?repo=${repoId}`}
+                        to={`/repositories/${repoId}`}
                         className="btn-table-prs"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -278,7 +305,7 @@ export default function RepoTable() {
                         }}
                       >
                         <GitPullRequest size={12} />
-                        <span>PRs</span>
+                        <span>Details</span>
                       </Link>
                       <button
                         type="button"

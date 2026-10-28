@@ -10,6 +10,7 @@ import Login from './pages/Login';
 import AuthCallback from './pages/AuthCallback';
 import Dashboard from './pages/Dashboard';
 import Repositories from './pages/Repositories';
+import RepositoryDetails from './pages/RepositoryDetails';
 import PullRequests from './pages/PullRequests';
 import PullRequestDetails from './pages/PullRequestDetails';
 import Reviews from './pages/Reviews';
@@ -37,6 +38,7 @@ export default function App() {
                 <Route element={<AppLayout />}>
                   <Route path="/dashboard" element={<Dashboard />} />
                   <Route path="/repositories" element={<Repositories />} />
+                  <Route path="/repositories/:repoId" element={<RepositoryDetails />} />
                   <Route path="/pull-requests" element={<PullRequests />} />
                   <Route path="/pull-requests/:id" element={<PullRequestDetails />} />
                   <Route path="/reviews" element={<Reviews />} />

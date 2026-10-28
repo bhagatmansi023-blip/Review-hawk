@@ -1,14 +1,14 @@
 import { Link } from 'react-router-dom';
-import { 
-  GitPullRequest, 
-  RotateCw, 
-  FolderGit2, 
-  GitBranch, 
-  ChevronDown, 
-  Plus, 
-  CheckCircle2, 
-  Lock, 
-  Globe 
+import {
+  GitPullRequest,
+  RotateCw,
+  FolderGit2,
+  GitBranch,
+  ChevronDown,
+  Plus,
+  CheckCircle2,
+  Lock,
+  Globe
 } from 'lucide-react';
 
 export default function PRHeader({
@@ -30,7 +30,7 @@ export default function PRHeader({
             <h1 className="placeholder-title" style={{ margin: 0 }}>Pull Requests</h1>
             <span className="placeholder-badge" style={{ backgroundColor: 'var(--accent-badge-bg)', color: 'var(--accent-primary)', border: '1px solid var(--accent-badge-border)' }}>
               <GitPullRequest size={14} />
-              <span>Phase 4: PR Listing</span>
+              <span>Phase 5: PR Listing</span>
             </span>
           </div>
           <p className="placeholder-desc" style={{ marginTop: '6px' }}>
