@@ -6,6 +6,7 @@ import RepoActionBanner from '../components/repos/RepoActionBanner';
 import RepoEmptyState from '../components/repos/RepoEmptyState';
 import RepoPermissionNotice from '../components/repos/RepoPermissionNotice';
 import RepoContractModal from '../components/repos/RepoContractModal';
+import ConnectRepositoryModal from '../components/repos/ConnectRepositoryModal';
 
 export default function Repositories() {
   const {
@@ -60,6 +61,7 @@ export default function Repositories() {
       {/* Modals */}
       <RepoPermissionNotice />
       <RepoContractModal />
+      <ConnectRepositoryModal />
     </div>
   );
 }

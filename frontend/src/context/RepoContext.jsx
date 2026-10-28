@@ -57,9 +57,10 @@ export function RepoProvider({ children }) {
     }
   }, []);
 
-  // Modals for Contract and Permissions
+  // Modals for Contract, Permissions, and Connect
   const [isContractModalOpen, setIsContractModalOpen] = useState(false);
   const [isPermissionModalOpen, setIsPermissionModalOpen] = useState(false);
+  const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
 
   // Fetch repositories from real Django backend
   const fetchRepositories = useCallback(async () => {
@@ -261,6 +262,8 @@ export function RepoProvider({ children }) {
     setIsContractModalOpen,
     isPermissionModalOpen,
     setIsPermissionModalOpen,
+    isConnectModalOpen,
+    setIsConnectModalOpen,
   };
 
   return <RepoContext.Provider value={value}>{children}</RepoContext.Provider>;

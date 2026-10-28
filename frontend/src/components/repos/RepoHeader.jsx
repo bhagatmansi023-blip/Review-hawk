@@ -1,11 +1,11 @@
 import { Link } from 'react-router-dom';
-import { LayoutDashboard, CheckCircle2, AlertTriangle, FileCode, Shield } from 'lucide-react';
+import { LayoutDashboard, CheckCircle2, AlertTriangle, FileCode, Shield, Plus, FolderGit2 } from 'lucide-react';
 import { useAuth } from '../../context/useAuth';
 import { useRepos } from '../../context/useRepos';
 
 export default function RepoHeader() {
   const { user, isAuthenticated } = useAuth();
-  const { setIsContractModalOpen, setIsPermissionModalOpen } = useRepos();
+  const { setIsContractModalOpen, setIsPermissionModalOpen, setIsConnectModalOpen } = useRepos();
 
   return (
     <div className="repo-page-header">
@@ -40,17 +40,32 @@ export default function RepoHeader() {
             <span>API Contract</span>
           </button>
 
-          <Link to="/dashboard" className="btn-header-primary">
-            <span>Return to Dashboard</span>
+          <Link to="/dashboard" className="btn-header-secondary">
+            <LayoutDashboard size={14} />
+            <span>Dashboard</span>
           </Link>
+
+          <button
+            type="button"
+            id="btn-connect-repository"
+            className="btn-header-primary"
+            onClick={() => setIsConnectModalOpen(true)}
+            title="Connect a GitHub repository to CodeHawk"
+          >
+            <Plus size={14} />
+            <span>Connect Repository</span>
+          </button>
         </div>
       </div>
 
       <div className="repo-header-main">
         <div className="repo-title-group">
-          <h1 className="repo-page-title">Repositories</h1>
+          <h1 className="repo-page-title">
+            <FolderGit2 size={28} className="repo-title-icon" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '10px', color: 'var(--accent-primary)' }} />
+            Repositories
+          </h1>
           <p className="repo-page-description">
-            Connect GitHub repositories to enable automated code reviews.
+            Connect your GitHub repositories to enable automated pull request code reviews. Select any repository below to start monitoring, or click <strong>Connect Repository</strong> to learn about the connection process.
           </p>
         </div>
 
