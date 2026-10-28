@@ -46,6 +46,8 @@ class Review(models.Model):
     files_reviewed = models.PositiveIntegerField(default=0)
 
     github_review_id = models.BigIntegerField(null=True, blank=True)  # set once posted
+    installation_id = models.BigIntegerField(null=True, blank=True)   # GitHub App installation
+    posted_at = models.DateTimeField(null=True, blank=True)           # when review was posted
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)

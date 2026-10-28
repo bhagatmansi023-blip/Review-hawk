@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
     bind=True,
     name="reviews.run_llm_review",
     max_retries=3,
-    default_retry_delay=60,   # seconds between retries
+    default_retry_delay=60,   # base seconds; Celery applies exponential backoff via countdown
     acks_late=True,           # only ack after the task finishes (safer)
     reject_on_worker_lost=True,
 )
@@ -25,26 +25,38 @@ def run_llm_review(self, review_id: int) -> None:
     """
     Celery task: run a full Gemini AI review for the given Review row.
 
-    Parameters
-    ----------
-    review_id:
-        Primary key of a ``reviews.Review`` DB row that has been created
-        (status=PENDING) and is ready for processing.
-
     Retry behaviour
     ---------------
-    On any unexpected exception the task is retried up to 3 times with a
-    60-second delay.  Permanent failures (e.g. invalid JSON from Gemini)
-    are caught inside ``run_review`` and written to ``Review.error_message``;
-    those do NOT trigger a Celery retry.
+    ``run_review`` re-raises transient errors (timeouts, rate-limits, 5xx) so
+    this task can retry them with exponential backoff (max 3 attempts).
+    Permanent failures (bad JSON, 404, auth errors) are caught inside
+    ``run_review``, written to ``Review.error_message``, and NOT re-raised —
+    so Celery does NOT retry them.
+
+    Double-post guard
+    -----------------
+    ``run_review`` checks ``review.status == COMPLETED`` at the top and returns
+    immediately, so even if Celery re-delivers the task the review is only
+    posted once.
     """
-    from reviews.llm_reviewer import run_review
+    from reviews.llm_reviewer import run_review, _is_transient
 
     logger.info("Celery task started: run_llm_review(review_id=%d)", review_id)
     try:
         run_review(review_id)
     except Exception as exc:
-        logger.exception(
-            "Unhandled exception in run_llm_review(review_id=%d): %s", review_id, exc
+        if _is_transient(exc):
+            delay = self.default_retry_delay * (2 ** self.request.retries)
+            logger.warning(
+                "Transient error in review %d (attempt %d/%d), retrying in %ds: %s",
+                review_id,
+                self.request.retries + 1,
+                self.max_retries,
+                delay,
+                exc,
+            )
+            raise self.retry(exc=exc, countdown=delay)
+        # Permanent — run_review already saved error_message; log and stop.
+        logger.error(
+            "Permanent failure in run_llm_review(review_id=%d): %s", review_id, exc
         )
-        raise self.retry(exc=exc)

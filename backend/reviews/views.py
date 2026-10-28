@@ -19,6 +19,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from django.db import IntegrityError
 from django.http import HttpResponse, HttpResponseForbidden, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from decouple import config
@@ -136,6 +137,10 @@ def _handle_pull_request(
     author = pr_data.get("user", {}).get("login", "")
     html_url = pr_data.get("html_url", "")
     state = pr_data.get("state", "open")
+    # GitHub App sends installation.id; may be absent for OAuth-only setups
+    installation_id: int | None = (
+        payload.get("installation", {}).get("id") or None
+    )
 
     if not (pr_number and head_sha):
         logger.warning("pull_request payload missing number or head.sha — skipping.")
@@ -172,12 +177,22 @@ def _handle_pull_request(
         )
         return
 
-    # ── Create pending Review row ──────────────────────────────────────────
-    review = Review.objects.create(
-        pull_request=db_pr,
-        head_sha=head_sha,
-        status=Review.Status.PENDING,
-    )
+    # ── Create pending Review row (guard against concurrent redeliveries) ──
+    try:
+        review = Review.objects.create(
+            pull_request=db_pr,
+            head_sha=head_sha,
+            status=Review.Status.PENDING,
+            installation_id=installation_id,
+        )
+    except IntegrityError:
+        # Two webhook deliveries raced; the other one won — this is fine.
+        logger.info(
+            "IntegrityError creating Review for PR #%d @ %s — concurrent duplicate, skipping.",
+            pr_number, head_sha[:7],
+        )
+        return
+
     logger.info(
         "Created Review(id=%d) for PR #%d @ %s — dispatching Celery task.",
         review.pk,

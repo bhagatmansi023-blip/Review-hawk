@@ -26,8 +26,9 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import google.generativeai as genai
+import requests as http_requests
 from decouple import config
-from github import Github, GithubException
+from github import Github, GithubException, GithubIntegration
 
 from repos.models import PullRequest, Repository
 from reviews.models import Review, ReviewComment
@@ -40,9 +41,14 @@ logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = config("GEMINI_API_KEY", default="")
 GEMINI_MODEL = config("GEMINI_MODEL", default="gemini-2.5-flash")
+GITHUB_APP_ID = config("GITHUB_APP_ID", default="")
+GITHUB_PRIVATE_KEY_PATH = config("GITHUB_PRIVATE_KEY_PATH", default="")
 
 # Maximum characters of diff we send to the model.  Keeps token cost sane.
 MAX_DIFF_CHARS = 80_000
+
+# Maximum inline comments per GitHub review (GitHub may reject more)
+MAX_INLINE_COMMENTS = 20
 
 # ---------------------------------------------------------------------------
 # Structured response types
@@ -440,17 +446,53 @@ def _parse_llm_response(raw: str) -> LLMReviewResult:
 
 
 # ---------------------------------------------------------------------------
-# GitHub helpers
+# GitHub auth helper
 # ---------------------------------------------------------------------------
 
 
-def _get_installation_token(repo: Repository) -> str:
+def _get_github_client(review: Review) -> Github:
     """
-    Return the OAuth token stored in the DB for the repository owner.
-    For now we reuse the user's OAuth token (sufficient for user-installed apps).
+    Return an authenticated PyGithub client.
+
+    Preference order
+    ----------------
+    1. GitHub App auth: read GITHUB_APP_ID + GITHUB_PRIVATE_KEY_PATH, create
+       a JWT, exchange it for an installation token using review.installation_id.
+       This posts the review *as the App* (not as the user).
+    2. User OAuth fallback: use the SocialToken stored by django-allauth.
+       Logs a warning so it's easy to spot in production.
+
+    Raises
+    ------
+    RuntimeError if neither method yields a token.
     """
+    installation_id: int | None = review.installation_id
+
+    if GITHUB_APP_ID and GITHUB_PRIVATE_KEY_PATH and installation_id:
+        try:
+            with open(GITHUB_PRIVATE_KEY_PATH, "r") as fh:
+                private_key = fh.read()
+            integration = GithubIntegration(
+                integration_id=int(GITHUB_APP_ID),
+                private_key=private_key,
+            )
+            install = integration.get_installation(
+                review.pull_request.repository.owner,
+                review.pull_request.repository.name,
+            )
+            token = integration.get_access_token(install.id).token
+            logger.info("Using GitHub App auth (installation_id=%d)", installation_id)
+            return Github(token)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "GitHub App auth failed (installation_id=%s): %s — falling back to user token.",
+                installation_id, exc,
+            )
+
+    # ── Fallback: user OAuth token ─────────────────────────────────────────────
     from allauth.socialaccount.models import SocialToken
 
+    repo = review.pull_request.repository
     token_obj = (
         SocialToken.objects.filter(
             account__user=repo.user,
@@ -461,109 +503,168 @@ def _get_installation_token(repo: Repository) -> str:
     )
     if not token_obj:
         raise RuntimeError(
-            f"No GitHub OAuth token found for user {repo.user}. "
-            "Cannot post review to GitHub."
+            f"No GitHub token available for user '{repo.user}' "
+            "(App auth not configured and no OAuth token found)."
         )
-    return token_obj.token
+    logger.warning(
+        "Using user OAuth token for review_id=%d — configure GITHUB_APP_ID and "
+        "GITHUB_PRIVATE_KEY_PATH to post as the App instead.",
+        review.pk,
+    )
+    return Github(token_obj.token)
+
+
+# ---------------------------------------------------------------------------
+# Transient error detection
+# ---------------------------------------------------------------------------
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """
+    Return True for errors that are worth retrying (rate-limits, timeouts,
+    server-side 5xx).  Return False for permanent errors (bad auth, not found,
+    invalid JSON, etc.).
+    """
+    if isinstance(exc, http_requests.Timeout):
+        return True
+    if isinstance(exc, http_requests.ConnectionError):
+        return True
+    if isinstance(exc, GithubException):
+        status = getattr(exc, "status", 0)
+        # 403 can mean rate-limited; 500/502/503 are GitHub server errors
+        if status in {403, 429, 500, 502, 503}:
+            return True
+    if isinstance(exc, Exception):
+        # Gemini 429 / 5xx surfaces as google.api_core.exceptions
+        module = type(exc).__module__ or ""
+        if "google" in module:
+            msg = str(exc).lower()
+            if any(k in msg for k in ("429", "quota", "rate", "unavailable", "internal")):
+                return True
+    return False
 
 
 def _post_github_review(
     gh: Github,
-    repo: Repository,
-    pr_number: int,
-    head_sha: str,
+    review: Review,
     result: LLMReviewResult,
     static_findings: list,
     position_map: dict[tuple[str, int], int],
 ) -> int:
     """
-    Post the LLM findings as a GitHub pull request review.
+    Post findings as a GitHub pull request review and update ReviewComment rows.
+
+    Rules
+    -----
+    - event is always ``COMMENT`` (never REQUEST_CHANGES) to avoid blocking PRs.
+    - Inline comments are capped at MAX_INLINE_COMMENTS (20) total.
+    - On GitHub 422 (unprocessable, e.g. stale diff position), retries once
+      with an empty inline list; overflowed findings move into the summary body.
+    - Sets ReviewComment.posted=True and github_comment_id for each inline hit.
 
     Returns the GitHub review ID.
     """
+    repo = review.pull_request.repository
+    pr_number = review.pull_request.number
+    head_sha = review.head_sha
+
     gh_repo = gh.get_repo(repo.full_name)
     gh_pr = gh_repo.get_pull(pr_number)
+    commit = gh_repo.get_commit(head_sha)
 
-    # Build inline comments from LLM findings
-    inline_comments = []
-    skipped = 0
+    # ── Build candidate inline comments ───────────────────────────────────
+    # Each entry: (body_str, ReviewComment_db_obj_or_None, path, position)
+    candidates: list[tuple[str, object, str, int]] = []
+
     for comment in result.comments:
         pos = position_map.get((comment.file_path, comment.line_number))
         if pos is None:
-            skipped += 1
             continue
         body = f"**[{comment.severity.upper()}]** {comment.message}"
         if comment.suggestion:
             body += f"\n\n> **Suggestion:** {comment.suggestion}"
-        inline_comments.append({"path": comment.file_path, "position": pos, "body": body})
+        candidates.append((body, None, comment.file_path, pos))
 
-    # Build inline comments from tree-sitter static findings
-    static_skipped = 0
     for finding in static_findings:
         pos = position_map.get((finding.file_path, finding.line_number))
         if pos is None:
-            static_skipped += 1
             continue
         icon = {"error": "🔴", "warning": "🟡", "info": "🔵"}.get(finding.severity, "🔵")
-        body = (
-            f"{icon} **[{finding.rule_id}]** {finding.message}"
-        )
+        body = f"{icon} **[{finding.rule_id}]** {finding.message}"
         if finding.suggestion:
             body += f"\n\n> **Fix:** {finding.suggestion}"
-        inline_comments.append({"path": finding.file_path, "position": pos, "body": body})
+        candidates.append((body, None, finding.file_path, pos))
 
-    if skipped + static_skipped:
-        logger.info(
-            "%d LLM + %d static comment(s) skipped — line not in diff",
-            skipped, static_skipped,
-        )
+    # ── Cap at MAX_INLINE_COMMENTS ───────────────────────────────────────
+    inline_candidates = candidates[:MAX_INLINE_COMMENTS]
+    overflow = candidates[MAX_INLINE_COMMENTS:]
+    skipped_no_pos = (
+        len(result.comments) + len(static_findings) - len(candidates)
+    )
 
-    # Build review body
-    review_body_parts = [
+    inline_payload = [
+        {"path": path, "position": pos, "body": body}
+        for body, _, path, pos in inline_candidates
+    ]
+
+    # ── Build review summary body ───────────────────────────────────────
+    body_parts = [
         "## Review-hawk AI Review",
         "",
         f"**Score:** {result.score:.0f}/10",
         "",
         result.summary,
     ]
-
     if result.security_flags:
-        review_body_parts += [
+        body_parts += [
             "",
             "### 🔴 Security Flags",
             *[f"- {flag}" for flag in result.security_flags],
         ]
-
     if static_findings:
-        review_body_parts += [
+        body_parts += [
             "",
             f"### 🔬 Static Analysis ({len(static_findings)} finding(s))",
             "*Deterministic checks via tree-sitter — no AI guessing.*",
         ]
-
-    if skipped + static_skipped:
-        review_body_parts += [
+    if overflow:
+        body_parts += [
             "",
-            f"*{skipped + static_skipped} finding(s) could not be posted inline (lines not in diff).*",
+            f"### ⚠️ {len(overflow)} finding(s) not posted inline (cap={MAX_INLINE_COMMENTS})",
         ]
+        for body, _, path, pos in overflow:
+            body_parts.append(f"- `{path}` pos {pos}: {body[:120]}")
+    if skipped_no_pos:
+        body_parts.append(
+            f"\n*{skipped_no_pos} finding(s) skipped — line not in diff.*"
+        )
 
-    review_body = "\n".join(review_body_parts)
+    review_body = "\n".join(body_parts)
 
-    # Determine event type
-    has_errors = (
-        any(c.severity == "error" for c in result.comments)
-        or any(f.severity == "error" for f in static_findings)
-        or bool(result.security_flags)
-    )
-    event = "REQUEST_CHANGES" if has_errors else "COMMENT"
+    # ── Post to GitHub (always COMMENT, retry once on 422) ────────────────
+    def _create(comments_payload: list) -> object:
+        return gh_pr.create_review(
+            commit=commit,
+            body=review_body,
+            event="COMMENT",
+            comments=comments_payload,
+        )
 
-    review = gh_pr.create_review(
-        commit=gh_repo.get_commit(head_sha),
-        body=review_body,
-        event=event,
-        comments=inline_comments,
-    )
-    return review.id
+    try:
+        gh_review = _create(inline_payload)
+    except GithubException as exc:
+        if getattr(exc, "status", 0) == 422:
+            logger.warning(
+                "GitHub 422 with %d inline comments — retrying without inline.",
+                len(inline_payload),
+            )
+            gh_review = _create([])
+            inline_payload = []  # nothing was posted inline
+        else:
+            raise
+
+    logger.info("Posted GitHub review id=%d with %d inline comment(s)", gh_review.id, len(inline_payload))
+    return gh_review.id
 
 
 # ---------------------------------------------------------------------------
@@ -577,16 +678,12 @@ def run_review(review_id: int) -> None:
 
     Called by the Celery task in ``reviews/tasks.py``.
 
-    Flow
-    ----
-    1. Load the Review + PullRequest from DB.
-    2. Fetch the PR diff from GitHub.
-    3. Build diff-position map + extract changed lines per file.
-    4. Call Gemini, parse the structured JSON response.
-    5. Run tree-sitter static analysis on changed Python files.
-    6. Merge & dedupe LLM + static findings.
-    7. Persist Review + ReviewComment rows.
-    8. Post the GitHub pull request review.
+    Error handling
+    --------------
+    - Transient errors (timeouts, rate-limits, 5xx) are re-raised so that the
+      Celery task can retry them with exponential backoff.
+    - Permanent errors (invalid JSON, 404, bad auth) are caught here, written
+      to Review.error_message, and NOT re-raised (no Celery retry).
     """
     try:
         review = Review.objects.select_related("pull_request__repository__user").get(
@@ -594,6 +691,11 @@ def run_review(review_id: int) -> None:
         )
     except Review.DoesNotExist:
         logger.error("Review %d not found in DB — aborting.", review_id)
+        return
+
+    # Guard: already completed — prevents double-post on Celery re-delivery
+    if review.status == Review.Status.COMPLETED:
+        logger.info("Review %d already completed — skipping.", review_id)
         return
 
     pr: PullRequest = review.pull_request
@@ -607,7 +709,12 @@ def run_review(review_id: int) -> None:
     try:
         _do_review(review, pr, repo)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Review %d failed: %s", review_id, exc)
+        if _is_transient(exc):
+            # Let the Celery task handle retry
+            logger.warning("Transient error in review %d: %s — will retry.", review_id, exc)
+            raise
+        # Permanent failure — record it and don't retry
+        logger.exception("Permanent failure in review %d: %s", review_id, exc)
         review.status = Review.Status.FAILED
         review.error_message = str(exc)
         review.finished_at = datetime.now(tz=timezone.utc)
@@ -615,25 +722,19 @@ def run_review(review_id: int) -> None:
 
 
 def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
-    """Inner function — all failures bubble up to ``run_review``."""
-    import requests as http_requests
+    """Inner function — transient errors bubble up; permanent ones do not."""
     from reviews.tree_sitter_analyzer import analyze_python, TREE_SITTER_AVAILABLE
 
     # ── 1. Authenticate with GitHub ────────────────────────────────────────
-    token = _get_installation_token(repo)
-    gh = Github(token)
+    gh = _get_github_client(review)
 
     gh_repo = gh.get_repo(repo.full_name)
     gh_pr = gh_repo.get_pull(pr.number)
 
     # ── 2. Fetch PR diff ───────────────────────────────────────────────────
-    diff_url = gh_pr.diff_url
     diff_resp = http_requests.get(
-        diff_url,
-        headers={
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github.v3.diff",
-        },
+        gh_pr.diff_url,
+        headers={"Accept": "application/vnd.github.v3.diff"},
         timeout=30,
     )
     diff_resp.raise_for_status()
@@ -641,11 +742,10 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
 
     # ── 3. Build diff-position map + extract changed lines per file ────────
     position_map = build_diff_position_map(raw_diff)
-    changed_lines_map = extract_changed_lines(raw_diff)  # {file_path: set[int]}
+    changed_lines_map = extract_changed_lines(raw_diff)
     logger.info(
         "Diff parsed: %d mappable positions, %d file(s) touched",
-        len(position_map),
-        len(changed_lines_map),
+        len(position_map), len(changed_lines_map),
     )
 
     # ── 4. Call Gemini ─────────────────────────────────────────────────────
@@ -659,114 +759,83 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     )
     logger.info("Calling Gemini model=%s for review_id=%d …", GEMINI_MODEL, review.pk)
     raw_text, input_tokens, output_tokens = _call_gemini(user_prompt)
-    logger.info(
-        "Gemini response: %d input tokens, %d output tokens",
-        input_tokens, output_tokens,
-    )
+    logger.info("Gemini response: %d in, %d out tokens", input_tokens, output_tokens)
 
-    # ── 5. Parse the structured LLM response ──────────────────────────────
+    # ── 5. Parse LLM response ───────────────────────────────────────────────
     result = _parse_llm_response(raw_text)
     result.raw_response = raw_text
     result.input_tokens = input_tokens
     result.output_tokens = output_tokens
 
-    # ── 6. Run tree-sitter static analysis on changed Python files ─────────
+    # ── 6. Tree-sitter static analysis ─────────────────────────────────────
     static_findings: list = []
     if TREE_SITTER_AVAILABLE:
-        python_files = [
-            fp for fp in changed_lines_map
-            if fp.endswith(".py")
-        ]
-        logger.info(
-            "Running tree-sitter on %d changed Python file(s)", len(python_files)
-        )
+        python_files = [fp for fp in changed_lines_map if fp.endswith(".py")]
+        logger.info("Running tree-sitter on %d Python file(s)", len(python_files))
         for file_path in python_files:
             try:
                 content_obj = gh_repo.get_contents(file_path, ref=review.head_sha)
                 source = content_obj.decoded_content.decode("utf-8", errors="replace")
-                changed = changed_lines_map.get(file_path, set())
-                findings = analyze_python(source, file_path, changed)
+                findings = analyze_python(source, file_path, changed_lines_map.get(file_path, set()))
                 static_findings.extend(findings)
             except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "tree-sitter analysis failed for %s: %s", file_path, exc
-                )
-    else:
-        logger.info("tree-sitter not available — skipping static analysis.")
+                logger.warning("tree-sitter failed for %s: %s", file_path, exc)
 
-    # ── 7. Merge & dedupe  (LLM + static) ─────────────────────────────────
-    final_llm_comments, final_static = merge_and_dedupe(
-        result.comments, static_findings
-    )
-    result.comments = final_llm_comments  # replace with deduped list
+    # ── 7. Merge & dedupe ──────────────────────────────────────────────────
+    final_llm, final_static = merge_and_dedupe(result.comments, static_findings)
+    result.comments = final_llm
 
     # ── 8. Persist Review summary ──────────────────────────────────────────
-    all_files = (
-        {c.file_path for c in result.comments}
-        | {f.file_path for f in final_static}
-    )
+    all_files = {c.file_path for c in result.comments} | {f.file_path for f in final_static}
     review.summary = result.summary
     review.llm_model = GEMINI_MODEL
     review.input_tokens = input_tokens
     review.output_tokens = output_tokens
     review.files_reviewed = len(all_files)
-    review.save(
-        update_fields=[
-            "summary", "llm_model", "input_tokens",
-            "output_tokens", "files_reviewed",
-        ]
-    )
+    review.save(update_fields=["summary", "llm_model", "input_tokens", "output_tokens", "files_reviewed"])
 
-    # ── 9. Persist ReviewComment rows (LLM + static) ───────────────────────
-    db_comments = []
+    # ── 9. Persist ReviewComment rows ───────────────────────────────────────
+    db_comments: list[ReviewComment] = []
     for comment in result.comments:
-        db_comments.append(
-            ReviewComment(
-                review=review,
-                file_path=comment.file_path,
-                line_number=comment.line_number,
-                severity=comment.severity,
-                category=comment.category,
-                message=comment.message,
-                suggestion=comment.suggestion,
-                source=ReviewComment.Source.LLM,
-            )
-        )
+        db_comments.append(ReviewComment(
+            review=review,
+            file_path=comment.file_path,
+            line_number=comment.line_number,
+            severity=comment.severity,
+            category=comment.category,
+            message=comment.message,
+            suggestion=comment.suggestion,
+            source=ReviewComment.Source.LLM,
+        ))
     for finding in final_static:
-        db_comments.append(
-            ReviewComment(
-                review=review,
-                file_path=finding.file_path,
-                line_number=finding.line_number,
-                severity=finding.severity,
-                category=finding.category,
-                message=finding.message,
-                suggestion=finding.suggestion,
-                source=ReviewComment.Source.STATIC,
-                rule_id=finding.rule_id,
-            )
-        )
+        db_comments.append(ReviewComment(
+            review=review,
+            file_path=finding.file_path,
+            line_number=finding.line_number,
+            severity=finding.severity,
+            category=finding.category,
+            message=finding.message,
+            suggestion=finding.suggestion,
+            source=ReviewComment.Source.STATIC,
+            rule_id=finding.rule_id,
+        ))
     ReviewComment.objects.bulk_create(db_comments)
-    logger.info(
-        "Saved %d ReviewComment(s) to DB (%d LLM, %d static)",
-        len(db_comments), len(result.comments), len(final_static),
-    )
+    logger.info("Saved %d comments (%d LLM, %d static)", len(db_comments), len(result.comments), len(final_static))
 
-    # ── 10. Post GitHub PR Review ──────────────────────────────────────────
+    # ── 10. Post to GitHub ──────────────────────────────────────────────────
     github_review_id = _post_github_review(
         gh=gh,
-        repo=pr.repository,
-        pr_number=pr.number,
-        head_sha=review.head_sha,
+        review=review,
         result=result,
         static_findings=final_static,
         position_map=position_map,
     )
-    logger.info("Posted GitHub PR review id=%d", github_review_id)
 
-    # ── 11. Mark complete ──────────────────────────────────────────────────
+    # ── 11. Mark posted + complete ──────────────────────────────────────────
+    now = datetime.now(tz=timezone.utc)
     review.status = Review.Status.COMPLETED
     review.github_review_id = github_review_id
-    review.finished_at = datetime.now(tz=timezone.utc)
-    review.save(update_fields=["status", "github_review_id", "finished_at"])
-    logger.info("Review %d completed successfully.", review.pk)
+    review.posted_at = now
+    review.finished_at = now
+    review.save(update_fields=["status", "github_review_id", "posted_at", "finished_at"])
+    logger.info("Review %d completed (github_review_id=%d).", review.pk, github_review_id)
