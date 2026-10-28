@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { 
   LayoutDashboard, 
@@ -12,11 +13,25 @@ import {
   GitBranch
 } from 'lucide-react';
 import { useRepos } from '../context/useRepos';
+import pullRequestsService from '../services/pullRequests';
 
 export default function Dashboard() {
   const { connectedRepos } = useRepos();
+  const [stats, setStats] = useState(null);
   const hasConnectedRepo = connectedRepos && connectedRepos.length > 0;
   const primaryRepo = hasConnectedRepo ? connectedRepos[0] : null;
+
+  useEffect(() => {
+    let isMounted = true;
+    pullRequestsService.getDashboardStats().then((data) => {
+      if (isMounted && data) {
+        setStats(data);
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   return (
     <div className="placeholder-page">
@@ -110,7 +125,7 @@ export default function Dashboard() {
             <FolderGit2 size={16} />
             <span>Connected Repositories</span>
           </div>
-          <div className="stat-value">{connectedRepos.length}</div>
+          <div className="stat-value">{stats ? stats.connected_repos_count : connectedRepos.length}</div>
           <div className="stat-subtext">Active on pull requests</div>
         </div>
 
@@ -119,8 +134,8 @@ export default function Dashboard() {
             <GitPullRequest size={16} />
             <span>Reviewed PRs</span>
           </div>
-          <div className="stat-value">0</div>
-          <div className="stat-subtext">Scheduled for Phase 4</div>
+          <div className="stat-value">{stats ? stats.total_prs_reviewed : 0}</div>
+          <div className="stat-subtext">{stats ? 'Automated reviews run' : 'Review bot active'}</div>
         </div>
 
         <div className="stat-card">
@@ -128,7 +143,7 @@ export default function Dashboard() {
             <ShieldAlert size={16} />
             <span>Quality Findings</span>
           </div>
-          <div className="stat-value">0</div>
+          <div className="stat-value">{stats ? stats.total_findings_count : 0}</div>
           <div className="stat-subtext">Static & AI checks</div>
         </div>
       </div>

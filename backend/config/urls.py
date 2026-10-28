@@ -17,10 +17,23 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 
+from reviews.api_views import (
+    DashboardStatsView,
+    PullRequestDetailView,
+    PullRequestListView,
+    ReviewDetailView,
+)
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("accounts/", include("allauth.urls")),
     path("api/auth/", include("repos.auth_urls")),
     path("api/webhook/", include("reviews.urls")),
     path("api/repos/", include("repos.urls")),
+    # Top-level PR and review endpoints
+    path("api/pull-requests/", PullRequestListView.as_view(), name="pull-requests-list"),
+    path("api/pull-requests/<int:pk>/", PullRequestDetailView.as_view(), name="pull-requests-detail"),
+    path("api/reviews/<int:pk>/", ReviewDetailView.as_view(), name="review-detail"),
+    # Dashboard command center metrics
+    path("api/dashboard/stats/", DashboardStatsView.as_view(), name="dashboard-stats"),
 ]

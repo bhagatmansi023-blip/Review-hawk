@@ -150,6 +150,21 @@ export const pullRequestsService = {
 
       throw error;
     }
+  },
+
+  /**
+   * Retrieves aggregated dashboard statistics (connected repos, reviewed PRs, quality findings).
+   * Calls GET /api/dashboard/stats/
+   * @returns {Promise<Object>} Dashboard metrics object
+   */
+  async getDashboardStats() {
+    try {
+      const response = await apiService.get('/api/dashboard/stats/');
+      return response;
+    } catch (error) {
+      console.warn('Dashboard stats endpoint unavailable, using local fallback:', error);
+      return null;
+    }
   }
 };
 
