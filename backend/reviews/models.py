@@ -68,6 +68,22 @@ class Review(models.Model):
             models.Index(fields=["-created_at"]),
         ]
 
+    # backend/reviews/models.py
+class Review(models.Model):
+    # … existing fields …
+
+    # ---- NEW health columns (replace old health_details / risk_level) ----
+    health_report = models.JSONField(default=dict, blank=True)   # full JSON report
+    health_score = models.SmallIntegerField(null=True, blank=True)
+    health_grade = models.CharField(max_length=2, default="", blank=True)
+
+    # Remove old fields – comment them out for now (migration will drop)
+    # health_details = models.JSONField(default=dict, blank=True)
+    # risk_level = models.CharField(max_length=20, blank=True)
+
+    # Keep the rest of the model unchanged.
+
+
     @property
     def total_tokens(self):
         return self.input_tokens + self.output_tokens
