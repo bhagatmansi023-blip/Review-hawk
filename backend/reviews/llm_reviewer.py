@@ -25,10 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-try:
-    import google.generativeai as genai
-except ImportError:
-    genai = None
+import google.generativeai as genai
 import requests as http_requests
 from decouple import config
 from github import Github, GithubException, GithubIntegration
@@ -199,79 +196,50 @@ def extract_changed_lines(raw_diff: str) -> dict[str, set[int]]:
 def merge_and_dedupe(
     llm_comments: list["LLMComment"],
     static_findings: list,
-    proximity_window: int = 2,
 ) -> tuple[list["LLMComment"], list]:
     """
-    Merge LLM and tree-sitter findings with proximity-aware deduplication.
+    Merge LLM and tree-sitter findings, deduplicating by (file_path, line_number).
 
     Strategy
     --------
-    - Matches static findings with LLM comments on the same file within
-      ``proximity_window`` lines (default: +/- 2 lines).
-    - If matched:
-      * Keeps the tree-sitter finding (deterministic, rule-based).
-      * Inherits the LLM's concrete fix if static finding lacks a suggestion.
-      * Enriches the static message with AI explanation.
-      * Upgrades severity if the LLM flagged it as more severe (e.g. error vs warning).
-      * Drops the duplicate LLM comment to avoid repeating warnings on the PR.
-    - Findings/comments unique to only LLM or only tree-sitter are preserved.
+    - If both flag the **same line**: keep the tree-sitter finding (deterministic,
+      rule-based) and append ``[LLM also flagged]`` to its message.  Drop the
+      duplicate LLM comment for that line.
+    - Lines flagged only by LLM → kept as-is.
+    - Lines flagged only by tree-sitter → kept as-is.
+
+    Returns
+    -------
+    (filtered_llm_comments, annotated_static_findings)
     """
-    severity_order = {"error": 3, "warning": 2, "info": 1}
+    # Build lookup: lines covered by static findings
+    static_keys: set[tuple[str, int]] = {
+        (f.file_path, f.line_number) for f in static_findings
+    }
+    llm_keys: set[tuple[str, int]] = {
+        (c.file_path, c.line_number) for c in llm_comments
+    }
 
+    # Annotate static findings confirmed by the LLM
     annotated_static: list = []
-    matched_llm_indices: set[int] = set()
-
     for finding in static_findings:
-        best_idx: int | None = None
-        best_dist = proximity_window + 1
-
-        for idx, comment in enumerate(llm_comments):
-            if idx in matched_llm_indices:
-                continue
-            if comment.file_path != finding.file_path:
-                continue
-
-            dist = abs(comment.line_number - finding.line_number)
-            if dist <= proximity_window and dist < best_dist:
-                best_dist = dist
-                best_idx = idx
-
-        if best_idx is not None:
-            matched_llm_indices.add(best_idx)
-            matched_llm = llm_comments[best_idx]
-
-            # Upgrade severity if LLM marked it higher
-            if severity_order.get(matched_llm.severity, 1) > severity_order.get(finding.severity, 1):
-                finding.severity = matched_llm.severity
-
-            # Inherit AI fix suggestion if missing
-            if not getattr(finding, "suggestion", None) and matched_llm.suggestion:
-                finding.suggestion = matched_llm.suggestion
-
-            # Annotate message with LLM insight
-            if best_dist == 0:
-                finding.message += "  ⚠️ *LLM also flagged this line.*"
-            else:
-                finding.message += f"  ⚠️ *LLM also flagged nearby line {matched_llm.line_number}.*"
-
-            if matched_llm.message and matched_llm.message not in finding.message:
-                finding.message += f"\n\n*AI Insight:* {matched_llm.message}"
-
+        key = (finding.file_path, finding.line_number)
+        if key in llm_keys:
+            finding.message += "  \u26a0\ufe0f *LLM also flagged this line.*"
         annotated_static.append(finding)
 
-    # Drop LLM comments that were merged into static findings
+    # Drop LLM comments that duplicate a static finding on the same line
     filtered_llm = [
-        c for idx, c in enumerate(llm_comments)
-        if idx not in matched_llm_indices
+        c for c in llm_comments
+        if (c.file_path, c.line_number) not in static_keys
     ]
 
     logger.info(
-        "merge_and_dedupe: %d LLM + %d static → %d LLM kept, %d static kept (fused %d)",
+        "merge_and_dedupe: %d LLM + %d static → %d LLM kept, %d static kept",
         len(llm_comments),
         len(static_findings),
         len(filtered_llm),
         len(annotated_static),
-        len(matched_llm_indices),
     )
     return filtered_llm, annotated_static
 
@@ -582,6 +550,7 @@ def _post_github_review(
     result: LLMReviewResult,
     static_findings: list,
     position_map: dict[tuple[str, int], int],
+    health_markdown: str = "",
 ) -> int:
     """
     Post findings as a GitHub pull request review and update ReviewComment rows.
@@ -659,6 +628,8 @@ def _post_github_review(
             f"### 🔬 Static Analysis ({len(static_findings)} finding(s))",
             "*Deterministic checks via tree-sitter — no AI guessing.*",
         ]
+    if health_markdown:
+        body_parts += ["", health_markdown]
     if overflow:
         body_parts += [
             "",
@@ -756,6 +727,11 @@ def run_review(review_id: int) -> None:
 def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     """Inner function — transient errors bubble up; permanent ones do not."""
     from reviews.tree_sitter_analyzer import analyze_python, TREE_SITTER_AVAILABLE
+    from reviews.health_scorer import (
+        calculate_health_score,
+        extract_changed_files,
+        format_health_score_markdown,
+    )
 
     # ── 1. Authenticate with GitHub ────────────────────────────────────────
     gh = _get_github_client(review)
@@ -817,6 +793,22 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     final_llm, final_static = merge_and_dedupe(result.comments, static_findings)
     result.comments = final_llm
 
+    # ── 7b. Rule-based PR health score (never allowed to fail the review) ───
+    health = None
+    health_markdown = ""
+    try:
+        health = calculate_health_score(
+            changed_files=extract_changed_files(raw_diff),
+            raw_diff=raw_diff,
+            pr_title=pr.title,
+            pr_description=gh_pr.body or "",
+            ast_findings=final_static,
+            llm_comments=final_llm,
+        )
+        health_markdown = format_health_score_markdown(health)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Health scoring failed for review %d: %s", review.pk, exc)
+
     # ── 8. Persist Review summary ──────────────────────────────────────────
     all_files = {c.file_path for c in result.comments} | {f.file_path for f in final_static}
     review.summary = result.summary
@@ -824,7 +816,13 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     review.input_tokens = input_tokens
     review.output_tokens = output_tokens
     review.files_reviewed = len(all_files)
-    review.save(update_fields=["summary", "llm_model", "input_tokens", "output_tokens", "files_reviewed"])
+    update_fields = ["summary", "llm_model", "input_tokens", "output_tokens", "files_reviewed"]
+    if health is not None:
+        review.health_score = health.score
+        review.health_grade = health.grade
+        review.health_report = health.to_dict()
+        update_fields += ["health_score", "health_grade", "health_report"]
+    review.save(update_fields=update_fields)
 
     # ── 9. Persist ReviewComment rows ───────────────────────────────────────
     db_comments: list[ReviewComment] = []
@@ -861,6 +859,7 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
         result=result,
         static_findings=final_static,
         position_map=position_map,
+        health_markdown=health_markdown,
     )
 
     # ── 11. Mark posted + complete ──────────────────────────────────────────

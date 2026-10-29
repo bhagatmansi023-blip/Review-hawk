@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider } from './context/ThemeContext';
 import { AuthProvider } from './context/AuthContext';
@@ -8,14 +9,15 @@ import ProtectedRoute from './components/common/ProtectedRoute';
 
 import Login from './pages/Login';
 import AuthCallback from './pages/AuthCallback';
-import Dashboard from './pages/Dashboard';
 import Repositories from './pages/Repositories';
-import RepositoryDetails from './pages/RepositoryDetails';
 import PullRequests from './pages/PullRequests';
 import PullRequestDetails from './pages/PullRequestDetails';
 import Reviews from './pages/Reviews';
-import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
+
+// Chart pages are loaded on demand so the login screen stays light (recharts is large).
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Analytics = lazy(() => import('./pages/Analytics'));
 
 export default function App() {
   return (
@@ -23,6 +25,7 @@ export default function App() {
       <AuthProvider>
         <RepoProvider>
           <BrowserRouter>
+            <Suspense fallback={<div className="chart-skeleton" style={{ height: 240, margin: 32 }} role="status" aria-label="Loading page" />}>
             <Routes>
               {/* Root route redirects to dashboard (protected route will gate unauthenticated users to /login) */}
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
@@ -38,7 +41,6 @@ export default function App() {
                 <Route element={<AppLayout />}>
                   <Route path="/dashboard" element={<Dashboard />} />
                   <Route path="/repositories" element={<Repositories />} />
-                  <Route path="/repositories/:repoId" element={<RepositoryDetails />} />
                   <Route path="/pull-requests" element={<PullRequests />} />
                   <Route path="/pull-requests/:id" element={<PullRequestDetails />} />
                   <Route path="/reviews" element={<Reviews />} />
@@ -50,6 +52,7 @@ export default function App() {
               {/* Catch-all route redirects to /dashboard */}
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
+            </Suspense>
           </BrowserRouter>
         </RepoProvider>
       </AuthProvider>
