@@ -20,6 +20,8 @@ import { useRepos } from '../context/useRepos';
 import pullRequestsService from '../services/pullRequests';
 import PREmptyState from '../components/pullRequests/PREmptyState';
 import PRContractModal from '../components/pullRequests/PRContractModal';
+import HealthCard from '../components/reviews/HealthCard';
+import FindingsPanel from '../components/reviews/FindingsPanel';
 
 export default function PullRequestDetails() {
   const { id } = useParams();
@@ -455,6 +457,14 @@ export default function PullRequestDetails() {
           </div>
         )}
       </section>
+
+      {/* PR health score + findings from AI review and Tree-sitter (side by side) */}
+      {review && Array.isArray(review.comments) && (
+        <>
+          <HealthCard health={review.health} score={review.health_score} grade={review.health_grade} />
+          <FindingsPanel comments={review.comments} />
+        </>
+      )}
 
       {/* Contract Modal Helper */}
       <PRContractModal

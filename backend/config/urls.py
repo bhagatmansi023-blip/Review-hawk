@@ -30,10 +30,12 @@ urlpatterns = [
     path("api/auth/", include("repos.auth_urls")),
     path("api/webhook/", include("reviews.urls")),
     path("api/repos/", include("repos.urls")),
+    path("api/", include("reviews.api_urls")),
+
     # Top-level PR and review endpoints
     path("api/pull-requests/", PullRequestListView.as_view(), name="pull-requests-list"),
     path("api/pull-requests/<int:pk>/", PullRequestDetailView.as_view(), name="pull-requests-detail"),
     path("api/reviews/<int:pk>/", ReviewDetailView.as_view(), name="review-detail"),
     # Dashboard command center metrics
     path("api/dashboard/stats/", DashboardStatsView.as_view(), name="dashboard-stats"),
-]
+]

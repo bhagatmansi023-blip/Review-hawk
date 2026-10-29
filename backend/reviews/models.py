@@ -37,15 +37,6 @@ class Review(models.Model):
     head_sha = models.CharField(max_length=40)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     summary = models.TextField(blank=True)
-
-    
-    # Health Scoring Fields
-    health_score = models.IntegerField(null=True, blank=True)
-    health_grade = models.CharField(max_length=10, blank=True)
-    risk_level = models.CharField(max_length=50, blank=True)
-    health_details = models.JSONField(null=True, blank=True)
-
-    
     error_message = models.TextField(blank=True)
 
     # Stats for the dashboard
@@ -53,6 +44,11 @@ class Review(models.Model):
     input_tokens = models.PositiveIntegerField(default=0)
     output_tokens = models.PositiveIntegerField(default=0)
     files_reviewed = models.PositiveIntegerField(default=0)
+
+    # Rule-based PR health score (see reviews/health_scorer.py)
+    health_score = models.PositiveSmallIntegerField(null=True, blank=True)  # 0-100
+    health_grade = models.CharField(max_length=2, blank=True)               # A+ .. F
+    health_report = models.JSONField(default=dict, blank=True)              # signals, badges, tips
 
     github_review_id = models.BigIntegerField(null=True, blank=True)  # set once posted
     installation_id = models.BigIntegerField(null=True, blank=True)   # GitHub App installation

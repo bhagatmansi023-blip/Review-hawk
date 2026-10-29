@@ -1,61 +1,38 @@
-import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { 
-  LayoutDashboard, 
-  Clock, 
-  Activity, 
-  GitPullRequest, 
-  FolderGit2, 
-  Plus, 
-  CheckCircle2, 
-  ArrowRight,
-  ShieldAlert,
-  GitBranch
-} from 'lucide-react';
+import { Plus, CheckCircle2, ArrowRight, GitPullRequest, FolderGit2, GitBranch } from 'lucide-react';
 import { useRepos } from '../context/useRepos';
-import pullRequestsService from '../services/pullRequests';
+import useStats from '../hooks/useStats';
+import StatCards from '../components/analytics/StatCards';
+import IssuesOverTimeChart from '../components/analytics/IssuesOverTimeChart';
+import SeverityDonut from '../components/analytics/SeverityDonut';
+import DetectorSplit from '../components/analytics/DetectorSplit';
+import HealthDistribution from '../components/analytics/HealthDistribution';
+import ReviewsTable from '../components/reviews/ReviewsTable';
+import ErrorNotice from '../components/common/ErrorNotice';
 
 export default function Dashboard() {
   const { connectedRepos } = useRepos();
-  const [stats, setStats] = useState(null);
   const hasConnectedRepo = connectedRepos && connectedRepos.length > 0;
   const primaryRepo = hasConnectedRepo ? connectedRepos[0] : null;
+  const { data, isLoading, error, reload } = useStats({ days: 30 });
 
-  useEffect(() => {
-    let isMounted = true;
-    pullRequestsService.getDashboardStats().then((data) => {
-      if (isMounted && data) {
-        setStats(data);
-      }
-    });
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  const recent = data?.recent_reviews || [];
 
   return (
-    <div className="placeholder-page">
-      {/* Dashboard Top Header */}
+    <div className="placeholder-page analytics-page">
       <div className="placeholder-header">
         <div>
           <h1 className="placeholder-title">Dashboard</h1>
           <p className="placeholder-desc">
-            Central command center for repository status, active PR reviews, and code quality health.
+            Live review activity, findings and PR health across your connected repositories (last 30 days).
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          <Link to="/repositories" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
-            <Plus size={16} />
-            <span>Connect Repository</span>
-          </Link>
-          <span className="placeholder-badge">
-            <Clock size={14} />
-            <span>Phase 3 Repository Active</span>
-          </span>
-        </div>
+        <Link to="/repositories" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+          <Plus size={16} />
+          <span>Connect Repository</span>
+        </Link>
       </div>
 
-      {/* Connected Repository Status Card */}
       {hasConnectedRepo ? (
         <div className="dashboard-active-repo-card">
           <div className="active-repo-header">
@@ -74,27 +51,20 @@ export default function Dashboard() {
               </Link>
             </div>
           </div>
-
           <div className="active-repo-content">
             <div className="active-repo-title-row">
               <FolderGit2 size={24} className="active-repo-icon" />
               <div>
-                <h3 className="active-repo-name">
-                  {primaryRepo.full_name || `${primaryRepo.owner}/${primaryRepo.name}`}
-                </h3>
+                <h3 className="active-repo-name">{primaryRepo.full_name || `${primaryRepo.owner}/${primaryRepo.name}`}</h3>
                 <div className="active-repo-meta">
                   <span className="meta-item">
                     <GitBranch size={13} />
                     <span>{primaryRepo.default_branch || 'main'}</span>
                   </span>
                   <span className="meta-separator">•</span>
-                  <span className="meta-item">
-                    {primaryRepo.is_private ? 'Private repository' : 'Public repository'}
-                  </span>
+                  <span className="meta-item">{primaryRepo.is_private ? 'Private repository' : 'Public repository'}</span>
                   <span className="meta-separator">•</span>
-                  <span className="meta-item text-success">
-                    CodeHawk review bot active
-                  </span>
+                  <span className="meta-item text-success">CodeHawk review bot active</span>
                 </div>
               </div>
             </div>
@@ -118,71 +88,38 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Quick Metrics Cards */}
-      <div className="dashboard-stats-grid">
-        <div className="stat-card">
-          <div className="stat-label">
-            <FolderGit2 size={16} />
-            <span>Connected Repositories</span>
-          </div>
-          <div className="stat-value">{stats ? stats.connected_repos_count : connectedRepos.length}</div>
-          <div className="stat-subtext">Active on pull requests</div>
-        </div>
+      <ErrorNotice error={error} onRetry={reload} title="Could not load dashboard statistics" />
 
-        <div className="stat-card">
-          <div className="stat-label">
-            <GitPullRequest size={16} />
-            <span>Reviewed PRs</span>
-          </div>
-          <div className="stat-value">{stats ? stats.total_prs_reviewed : 0}</div>
-          <div className="stat-subtext">{stats ? 'Automated reviews run' : 'Review bot active'}</div>
-        </div>
+      <StatCards totals={data?.totals} isLoading={isLoading} />
 
-        <div className="stat-card">
-          <div className="stat-label">
-            <ShieldAlert size={16} />
-            <span>Quality Findings</span>
-          </div>
-          <div className="stat-value">{stats ? stats.total_findings_count : 0}</div>
-          <div className="stat-subtext">Static & AI checks</div>
-        </div>
+      <div className="analytics-grid analytics-grid-4">
+        <IssuesOverTimeChart series={data?.issues_over_time} isLoading={isLoading} />
+        <SeverityDonut breakdown={data?.severity_breakdown} isLoading={isLoading} />
+        <DetectorSplit sources={data?.source_breakdown} topRules={data?.top_rules} isLoading={isLoading} />
+        <HealthDistribution distribution={data?.health_distribution} isLoading={isLoading} />
       </div>
 
-      {/* Feature Roadmap & Activities */}
-      <div className="placeholder-card">
-        <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-          Review Engine Foundation
-        </h3>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.5 }}>
-          Now that repository selection is established, subsequent phases will link GitHub webhook deliveries to trigger LLM diff analysis and static checks.
-        </p>
-
-        <div className="roadmap-list">
-          <div className="roadmap-card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-primary)', marginBottom: '4px' }}>
-              <Activity size={18} />
-              <h5>Review Activity Feed</h5>
-            </div>
-            <p>Live stream of incoming GitHub pull requests and completed AI code analysis runs.</p>
+      <section className="chart-card" aria-label="Recent reviews">
+        <header className="chart-card-header">
+          <div>
+            <h3 className="chart-card-title">Recent reviews</h3>
+            <p className="chart-card-subtitle">Latest automated reviews across your repositories</p>
           </div>
-
-          <div className="roadmap-card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-secondary)', marginBottom: '4px' }}>
-              <GitPullRequest size={18} />
-              <h5>Connected Repositories</h5>
-            </div>
-            <p>Direct view of active branches, security scorecards, and pending PR reviews.</p>
+          <Link to="/reviews" className="btn-text-action" style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+            View all <ArrowRight size={14} />
+          </Link>
+        </header>
+        {isLoading ? (
+          <div className="chart-skeleton" style={{ height: 160 }} role="status" aria-label="Loading reviews" />
+        ) : recent.length === 0 ? (
+          <div className="chart-empty" style={{ height: 160 }}>
+            <GitPullRequest size={28} />
+            <p>No reviews yet. Open a pull request on a connected repository to see one here.</p>
           </div>
-
-          <div className="roadmap-card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#eab308', marginBottom: '4px' }}>
-              <LayoutDashboard size={18} />
-              <h5>Quality Metrics Summary</h5>
-            </div>
-            <p>Summaries of detected bugs, security notices, and code smell reduction trends.</p>
-          </div>
-        </div>
-      </div>
+        ) : (
+          <ReviewsTable reviews={recent} compact />
+        )}
+      </section>
     </div>
   );
 }

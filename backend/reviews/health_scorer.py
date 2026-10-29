@@ -1,60 +1,78 @@
 """
-health_scorer.py
-----------------
-Defines, tunes, and evaluates rule-based signals to compute a PR Health Score (0-100),
-assign a Health Grade (A+ to F), determine Risk Level, and generate actionable recommendations.
+reviews/health_scorer.py
+========================
+Rule-based **PR Health Score** (0-100) with a letter grade, risk level,
+badges and recommendations.
 
-SIGNALS EVALUATED:
-1. Size & Scope (lines changed, file sprawl)
-2. Test Ratio (presence of tests when source logic changes)
-3. Documentation & Context (PR description quality)
-4. Static AST Analysis (syntax errors, secrets, complexity, docstrings, unused imports)
-5. LLM Findings (critical, warning, suggestion, praise counts)
+The score starts at ``base_score`` (100) and every *signal* adds or removes
+points. Nothing here is machine-learned: each rule is explicit, so every point
+can be explained in a viva ("why did this PR get a C?" -> read the signal list).
+
+Signals
+-------
+1. size    - lines changed, number of files touched
+2. test    - are tests touched when source logic changes?
+3. docs    - is there a useful PR description?
+4. static  - Tree-sitter findings (rule ids TS-PY-001 ... TS-PY-005)
+5. llm     - AI review findings (severity: error / warning / info)
+
+Inputs match what the pipeline already has:
+  * static findings -> ``reviews.tree_sitter_analyzer.Finding`` (needs ``rule_id``)
+  * LLM comments    -> ``LLMComment`` or ``ReviewComment`` (needs ``severity``)
+
+Tuning
+------
+All weights and thresholds live in :class:`HealthScorerConfig`. To tune, change a
+value there and run ``pytest reviews/tests/test_health_scorer.py``; the scenario
+tests show which sample PRs move to a different grade. See docs/HEALTH_SCORING.md.
 """
 
+from __future__ import annotations
+
+import re
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
-import re
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Data Structures
+# Data structures
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class HealthSignal:
-    """A single evaluated rule-based signal contribution to the PR health score."""
-    code: str              # Unique signal identifier e.g. "LARGE_PR_SIZE"
-    category: str          # "size", "test", "docs", "ast", "llm"
-    score_delta: int       # Positive bonus or negative penalty
-    severity: str          # "positive", "info", "warning", "critical"
-    description: str       # Clear human-readable message
-    badge: Optional[str] = None  # Optional UI/Markdown badge e.g. "⚡ Huge Diff"
+    """One evaluated rule and its contribution to the score."""
+
+    code: str                     # e.g. "LARGE_PR_SIZE"
+    category: str                 # "size" | "test" | "docs" | "static" | "llm"
+    score_delta: int              # positive = bonus, negative = penalty
+    severity: str                 # "positive" | "info" | "warning" | "critical"
+    description: str
+    badge: Optional[str] = None
 
 
 @dataclass
 class PRHealthReport:
-    """Complete health evaluation result for a Pull Request."""
-    score: int                           # Clamped 0 - 100
-    grade: str                           # A+, A, B, C, D, F
-    risk_level: str                      # Low, Medium, High, Critical
-    status_emoji: str                    # Visual emoji for summary header
+    """Complete health evaluation for one pull request review."""
+
+    score: int
+    grade: str
+    risk_level: str
+    status_emoji: str
     signals: list[HealthSignal] = field(default_factory=list)
     badges: list[str] = field(default_factory=list)
     recommendations: list[str] = field(default_factory=list)
-    
-    # Raw metrics summary
+
     total_additions: int = 0
     total_deletions: int = 0
     total_files_changed: int = 0
     has_tests: bool = False
-    ast_critical_count: int = 0
-    ast_warning_count: int = 0
-    llm_critical_count: int = 0
+    static_critical_count: int = 0
+    static_warning_count: int = 0
+    llm_error_count: int = 0
     llm_warning_count: int = 0
 
     def to_dict(self) -> dict:
-        """Convert report to dictionary for JSON APIs and database storage."""
+        """JSON-safe dict for the database (Review.health_report) and the API."""
         return {
             "score": self.score,
             "grade": self.grade,
@@ -78,88 +96,150 @@ class PRHealthReport:
                 "deletions": self.total_deletions,
                 "files_changed": self.total_files_changed,
                 "has_tests": self.has_tests,
-                "ast_critical": self.ast_critical_count,
-                "ast_warning": self.ast_warning_count,
-                "llm_critical": self.llm_critical_count,
-                "llm_warning": self.llm_warning_count,
+                "static_critical": self.static_critical_count,
+                "static_warning": self.static_warning_count,
+                "llm_errors": self.llm_error_count,
+                "llm_warnings": self.llm_warning_count,
             },
         }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Configurable Weights & Threshold Tuning
+# Tunable configuration
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _default_static_rules() -> dict[str, dict]:
+    """
+    Penalty per Tree-sitter rule. ``per`` is applied once per finding, ``cap`` is
+    the most that rule can remove in total (so 30 unused imports can't zero a PR).
+    """
+    return {
+        "TS-PY-001": {"code": "STATIC_UNUSED_IMPORTS", "label": "unused import(s)",
+                      "per": -2, "cap": -10, "severity": "info"},
+        "TS-PY-002": {"code": "STATIC_LONG_FUNCTIONS", "label": "overly long function(s)",
+                      "per": -5, "cap": -15, "severity": "info"},
+        "TS-PY-003": {"code": "STATIC_BARE_EXCEPT", "label": "bare or empty except block(s)",
+                      "per": -8, "cap": -24, "severity": "warning"},
+        "TS-PY-004": {"code": "STATIC_DEEP_NESTING", "label": "deeply nested block(s)",
+                      "per": -8, "cap": -24, "severity": "warning"},
+        "TS-PY-005": {"code": "STATIC_HARDCODED_SECRETS", "label": "hardcoded secret(s)",
+                      "per": -30, "cap": -60, "severity": "critical"},
+    }
+
 
 @dataclass
 class HealthScorerConfig:
-    """Tunable thresholds and signal weights for health scoring."""
+    """Every threshold and weight used by :func:`calculate_health_score`."""
+
     base_score: int = 100
 
-    # Diff Size Thresholds
-    small_pr_max_lines: int = 100        # Bonus if <= 100 lines
-    medium_pr_max_lines: int = 300       # Neutral
-    large_pr_max_lines: int = 600        # Minor penalty
-    very_large_pr_max_lines: int = 1000  # Major penalty
-
-    # Signal Deltas (Points)
+    # --- size (lines changed = additions + deletions) ---
+    small_pr_max_lines: int = 100
+    medium_pr_max_lines: int = 300
+    large_pr_max_lines: int = 600
+    very_large_pr_max_lines: int = 1000
     bonus_small_pr: int = 5
-    penalty_medium_large_pr: int = -10
-    penalty_large_pr: int = -20
-    penalty_very_large_pr: int = -35
+    penalty_medium_large_pr: int = -8
+    penalty_large_pr: int = -18
+    penalty_very_large_pr: int = -30
 
-    # File Sprawl Thresholds
-    medium_files_threshold: int = 6      # -5 pts
-    high_files_threshold: int = 15       # -15 pts
-    penalty_medium_files: int = -5
-    penalty_high_files: int = -15
+    # --- file sprawl ---
+    medium_files_threshold: int = 6
+    high_files_threshold: int = 15
+    penalty_medium_files: int = -4
+    penalty_high_files: int = -12
 
-    # Tests & Docs Deltas
+    # --- tests / docs ---
+    min_lines_requiring_tests: int = 50
     penalty_no_tests: int = -15
     bonus_tests_included: int = 5
-    penalty_empty_description: int = -10
-    bonus_rich_description: int = 5
+    minimal_description_chars: int = 20
+    rich_description_chars: int = 100
+    penalty_empty_description: int = -8
+    bonus_rich_description: int = 3
 
-    # Static AST Analysis Deltas
-    penalty_ast_syntax_error: int = -50
-    penalty_ast_secret: int = -30
-    penalty_ast_complexity: int = -10
-    penalty_ast_missing_docstring: int = -2
-    max_penalty_docstrings: int = -10
-    penalty_ast_unused_import: int = -2
-    max_penalty_unused_imports: int = -10
+    # --- static analysis (Tree-sitter) ---
+    static_rules: dict = field(default_factory=_default_static_rules)
 
-    # LLM Findings Deltas
-    penalty_llm_critical: int = -25
-    penalty_llm_warning: int = -12
-    penalty_llm_suggestion: int = -3
-    max_penalty_llm_suggestions: int = -12
-    bonus_llm_praise: int = 2
-    max_bonus_llm_praise: int = 6
+    # --- LLM findings (severity -> per-finding penalty, with caps) ---
+    penalty_llm_error: int = -20
+    max_penalty_llm_errors: int = -50
+    penalty_llm_warning: int = -8
+    max_penalty_llm_warnings: int = -30
+    penalty_llm_info: int = -2
+    max_penalty_llm_info: int = -10
+
+    # --- grade boundaries (minimum score for each grade) ---
+    grade_a_plus: int = 90
+    grade_a: int = 80
+    grade_b: int = 70
+    grade_c: int = 60
+    grade_d: int = 40
 
 
 DEFAULT_CONFIG = HealthScorerConfig()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DIFF_FILE_HEADER = re.compile(r"^diff --git a/.+ b/(.+)$")
+_TEST_NAME = re.compile(
+    r"(^|/)(tests?|__tests__|spec)/"      # tests/ , test/ , __tests__/ , spec/
+    r"|(^|/)test_[^/]*$"                  # test_foo.py
+    r"|_test\.[a-z]+$"                    # foo_test.py / foo_test.go
+    r"|\.(test|spec)\.[a-z]+$",           # foo.test.js / foo.spec.ts
+    re.IGNORECASE,
+)
+
+
+def extract_changed_files(raw_diff: str) -> list[str]:
+    """Return every file path touched by a unified diff, in order, without duplicates."""
+    files: list[str] = []
+    for line in raw_diff.splitlines():
+        m = _DIFF_FILE_HEADER.match(line)
+        if m and m.group(1) not in files:
+            files.append(m.group(1))
+    return files
+
+
+def is_test_file(path: str) -> bool:
+    """True for typical test file locations and names (Python and JS/TS)."""
+    return bool(_TEST_NAME.search(path))
+
+
+def _count_diff_lines(raw_diff: str) -> tuple[int, int]:
+    additions = deletions = 0
+    for line in raw_diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+    return additions, deletions
+
+
+def _grade_for(score: int, cfg: HealthScorerConfig) -> tuple[str, str, str]:
+    if score >= cfg.grade_a_plus:
+        return "A+", "Low", "💚"
+    if score >= cfg.grade_a:
+        return "A", "Low", "🟢"
+    if score >= cfg.grade_b:
+        return "B", "Medium", "🟡"
+    if score >= cfg.grade_c:
+        return "C", "Medium", "🟠"
+    if score >= cfg.grade_d:
+        return "D", "High", "🔴"
+    return "F", "Critical", "🚨"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Health Scorer Engine
+# Scoring engine
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _is_test_file(filename: str) -> bool:
-    """Check if a filename represents a test file."""
-    f = filename.lower()
-    return (
-        "test" in f
-        or f.startswith("tests/")
-        or f.endswith("_test.py")
-        or f.endswith("_test.js")
-        or f.endswith("_test.ts")
-        or f.endswith(".spec.js")
-        or f.endswith(".spec.ts")
-    )
 
 
 def calculate_health_score(
-    changed_files: list[str],
+    changed_files: Sequence[str],
     raw_diff: str,
     pr_title: str = "",
     pr_description: str = "",
@@ -168,367 +248,182 @@ def calculate_health_score(
     config: HealthScorerConfig = DEFAULT_CONFIG,
 ) -> PRHealthReport:
     """
-    Compute rule-based health score, grade, signals, and recommendations for a PR.
+    Compute the health report for one PR.
 
-    Args:
-        changed_files   : List of file path strings changed in the PR
-        raw_diff        : Unified diff string
-        pr_title        : PR title string
-        pr_description  : PR body string
-        ast_findings    : List of ASTFinding objects (from ast_checker)
-        llm_comments    : List of ReviewComment objects (from llm_reviewer)
-        config          : Custom HealthScorerConfig tuning parameters
-
-    Returns:
-        PRHealthReport object
+    ``ast_findings``: objects with ``rule_id`` (Tree-sitter findings).
+    ``llm_comments``: objects with ``severity`` in {"error", "warning", "info"}.
     """
-    ast_findings = ast_findings or []
-    llm_comments = llm_comments or []
+    cfg = config
+    ast_findings = list(ast_findings or [])
+    llm_comments = list(llm_comments or [])
+    changed_files = list(changed_files or [])
 
     signals: list[HealthSignal] = []
     badges: list[str] = []
     recommendations: list[str] = []
 
-    # ── 1. Calculate Diff Statistics ─────────────────────────────────────────
-    additions = 0
-    deletions = 0
-    for line in raw_diff.splitlines():
-        if line.startswith('+') and not line.startswith('+++'):
-            additions += 1
-        elif line.startswith('-') and not line.startswith('---'):
-            deletions += 1
-
+    additions, deletions = _count_diff_lines(raw_diff or "")
     total_changes = additions + deletions
     total_files = len(changed_files)
 
-    # ── 2. Size & Scope Signals ──────────────────────────────────────────────
-    if total_changes <= config.small_pr_max_lines:
+    # 1. Size ----------------------------------------------------------------
+    if total_changes <= cfg.small_pr_max_lines:
         signals.append(HealthSignal(
-            code="SMALL_PR_SIZE",
-            category="size",
-            score_delta=config.bonus_small_pr,
-            severity="positive",
-            description=f"Compact PR size ({total_changes} lines changed) — fast and easy to review.",
-            badge="✨ Concise PR",
-        ))
-    elif total_changes > config.very_large_pr_max_lines:
+            "SMALL_PR_SIZE", "size", cfg.bonus_small_pr, "positive",
+            f"Compact PR ({total_changes} lines changed): quick to review.", "✨ Concise PR"))
+        badges.append("✨ Concise PR")
+    elif total_changes > cfg.very_large_pr_max_lines:
         signals.append(HealthSignal(
-            code="VERY_LARGE_PR_SIZE",
-            category="size",
-            score_delta=config.penalty_very_large_pr,
-            severity="critical",
-            description=f"Monolithic PR diff ({total_changes} lines changed). High review fatigue and risk.",
-            badge="⚡ Massive Diff (>1k lines)",
-        ))
+            "VERY_LARGE_PR_SIZE", "size", cfg.penalty_very_large_pr, "critical",
+            f"Very large diff ({total_changes} lines changed): high review fatigue and risk.",
+            "⚡ Massive Diff"))
         badges.append("⚡ Massive Diff")
         recommendations.append(
-            f"Consider splitting this PR into smaller, atomic pull requests. "
-            f"Currently changing {total_changes} lines across {total_files} files."
-        )
-    elif total_changes > config.large_pr_max_lines:
+            f"Split this PR into smaller, focused pull requests "
+            f"({total_changes} lines across {total_files} files).")
+    elif total_changes > cfg.large_pr_max_lines:
         signals.append(HealthSignal(
-            code="LARGE_PR_SIZE",
-            category="size",
-            score_delta=config.penalty_large_pr,
-            severity="warning",
-            description=f"Large PR diff ({total_changes} lines changed). May slow down code review.",
-            badge="🐘 Large Diff (>600 lines)",
-        ))
+            "LARGE_PR_SIZE", "size", cfg.penalty_large_pr, "warning",
+            f"Large diff ({total_changes} lines changed): may slow down review.", "🐘 Large Diff"))
         badges.append("🐘 Large Diff")
-    elif total_changes > config.medium_pr_max_lines:
+    elif total_changes > cfg.medium_pr_max_lines:
         signals.append(HealthSignal(
-            code="MEDIUM_LARGE_PR_SIZE",
-            category="size",
-            score_delta=config.penalty_medium_large_pr,
-            severity="info",
-            description=f"Slightly large PR diff ({total_changes} lines changed).",
-        ))
+            "MEDIUM_PR_SIZE", "size", cfg.penalty_medium_large_pr, "info",
+            f"Slightly large diff ({total_changes} lines changed)."))
 
-    # File Sprawl Signal
-    if total_files > config.high_files_threshold:
+    if total_files > cfg.high_files_threshold:
         signals.append(HealthSignal(
-            code="HIGH_FILE_SPRAWL",
-            category="size",
-            score_delta=config.penalty_high_files,
-            severity="warning",
-            description=f"High file sprawl ({total_files} files changed). High context-switching cost.",
-            badge="📂 File Sprawl (>15 files)",
-        ))
+            "HIGH_FILE_SPRAWL", "size", cfg.penalty_high_files, "warning",
+            f"{total_files} files changed: high context-switching cost.", "📂 File Sprawl"))
         badges.append("📂 File Sprawl")
-    elif total_files >= config.medium_files_threshold:
+    elif total_files >= cfg.medium_files_threshold:
         signals.append(HealthSignal(
-            code="MEDIUM_FILE_SPRAWL",
-            category="size",
-            score_delta=config.penalty_medium_files,
-            severity="info",
-            description=f"Moderate file sprawl ({total_files} files changed).",
-        ))
+            "MEDIUM_FILE_SPRAWL", "size", cfg.penalty_medium_files, "info",
+            f"{total_files} files changed."))
 
-    # ── 3. Test Coverage & Signals ───────────────────────────────────────────
-    test_files = [f for f in changed_files if _is_test_file(f)]
-    non_test_files = [f for f in changed_files if not _is_test_file(f)]
-    has_tests = len(test_files) > 0
-
+    # 2. Tests ---------------------------------------------------------------
+    test_files = [f for f in changed_files if is_test_file(f)]
+    source_files = [f for f in changed_files if not is_test_file(f)]
+    has_tests = bool(test_files)
     if has_tests:
         signals.append(HealthSignal(
-            code="TESTS_INCLUDED",
-            category="test",
-            score_delta=config.bonus_tests_included,
-            severity="positive",
-            description=f"Includes test file updates ({len(test_files)} test file(s) modified).",
-            badge="🧪 Tests Included",
-        ))
+            "TESTS_INCLUDED", "test", cfg.bonus_tests_included, "positive",
+            f"Touches {len(test_files)} test file(s).", "🧪 Tests Included"))
         badges.append("🧪 Tests Included")
-    elif len(non_test_files) > 0 and total_changes > 50:
+    elif source_files and total_changes > cfg.min_lines_requiring_tests:
         signals.append(HealthSignal(
-            code="NO_TESTS_INCLUDED",
-            category="test",
-            score_delta=config.penalty_no_tests,
-            severity="warning",
-            description="Source code modified with over 50 lines changed, but no test files modified.",
-            badge="⚠️ No Tests",
-        ))
+            "NO_TESTS_INCLUDED", "test", cfg.penalty_no_tests, "warning",
+            f"More than {cfg.min_lines_requiring_tests} lines of source changed but no test file was touched.",
+            "⚠️ No Tests"))
         badges.append("⚠️ No Tests")
-        recommendations.append("Add unit or integration test cases to cover the modified logic.")
+        recommendations.append("Add unit or integration tests for the changed logic.")
 
-    # ── 4. PR Context & Description Signals ─────────────────────────────────
-    clean_desc = pr_description.strip() if pr_description else ""
-    if len(clean_desc) < 20:
+    # 3. Description ---------------------------------------------------------
+    desc = (pr_description or "").strip()
+    if len(desc) < cfg.minimal_description_chars:
         signals.append(HealthSignal(
-            code="EMPTY_OR_MINIMAL_DESCRIPTION",
-            category="docs",
-            score_delta=config.penalty_empty_description,
-            severity="warning",
-            description="PR description is missing or minimal (<20 chars). Reviewers lack context.",
-            badge="📝 Sparse Description",
-        ))
+            "MINIMAL_DESCRIPTION", "docs", cfg.penalty_empty_description, "warning",
+            f"PR description is missing or under {cfg.minimal_description_chars} characters.",
+            "📝 Sparse Description"))
         badges.append("📝 Sparse Description")
-        recommendations.append("Provide a detailed PR description explaining the 'why', testing steps, and background.")
-    elif len(clean_desc) >= 100:
+        recommendations.append("Explain the why, how to test, and any risks in the PR description.")
+    elif len(desc) >= cfg.rich_description_chars:
         signals.append(HealthSignal(
-            code="RICH_DESCRIPTION",
-            category="docs",
-            score_delta=config.bonus_rich_description,
-            severity="positive",
-            description="Detailed PR description provided with comprehensive context.",
-            badge="📖 Well Documented",
-        ))
+            "RICH_DESCRIPTION", "docs", cfg.bonus_rich_description, "positive",
+            "Detailed PR description gives reviewers context.", "📖 Well Documented"))
 
-    # ── 5. Static AST Analysis Signals (tree-sitter) ─────────────────────────
-    ast_critical_count = 0
-    ast_warning_count = 0
-
-    syntax_errors = [f for f in ast_findings if getattr(f, "check", "") == "SYNTAX_ERROR"]
-    secrets = [f for f in ast_findings if getattr(f, "check", "") == "HARDCODED_SECRET"]
-    complexities = [f for f in ast_findings if getattr(f, "check", "") == "COMPLEXITY"]
-    missing_docstrings = [f for f in ast_findings if getattr(f, "check", "") == "MISSING_DOCSTRING"]
-    unused_imports = [f for f in ast_findings if getattr(f, "check", "") == "UNUSED_IMPORT"]
-
-    if syntax_errors:
-        ast_critical_count += len(syntax_errors)
-        delta = config.penalty_ast_syntax_error * len(syntax_errors)
+    # 4. Static analysis (Tree-sitter) ----------------------------------------
+    static_critical = static_warning = 0
+    for rule_id, rule in cfg.static_rules.items():
+        hits = [f for f in ast_findings if getattr(f, "rule_id", "") == rule_id]
+        if not hits:
+            continue
+        delta = max(rule["cap"], rule["per"] * len(hits))
+        sev = rule["severity"]
+        if sev == "critical":
+            static_critical += len(hits)
+        elif sev == "warning":
+            static_warning += len(hits)
+        badge = "🔒 Secret Detected" if rule_id == "TS-PY-005" else None
         signals.append(HealthSignal(
-            code="AST_SYNTAX_ERRORS",
-            category="ast",
-            score_delta=delta,
-            severity="critical",
-            description=f"Syntax error(s) detected in {len(syntax_errors)} location(s). Code cannot parse.",
-            badge="🔴 Syntax Error",
-        ))
-        badges.append("🔴 Syntax Error")
-        recommendations.append("Fix syntax errors before merging — the codebase will fail to parse/execute.")
+            rule["code"], "static", delta, sev,
+            f"Static check found {len(hits)} {rule['label']}.", badge))
+        if badge:
+            badges.append(badge)
+            recommendations.append("Remove hardcoded secrets and load them from environment variables.")
+        elif rule_id == "TS-PY-003":
+            recommendations.append("Catch specific exceptions and log or handle the error instead of ignoring it.")
+        elif rule_id == "TS-PY-004":
+            recommendations.append("Flatten deeply nested code with early returns or helper functions.")
 
-    if secrets:
-        ast_critical_count += len(secrets)
-        delta = config.penalty_ast_secret * len(secrets)
+    # 5. LLM findings --------------------------------------------------------
+    errors = [c for c in llm_comments if getattr(c, "severity", "") == "error"]
+    warnings = [c for c in llm_comments if getattr(c, "severity", "") == "warning"]
+    infos = [c for c in llm_comments if getattr(c, "severity", "") == "info"]
+
+    if errors:
         signals.append(HealthSignal(
-            code="AST_HARDCODED_SECRETS",
-            category="ast",
-            score_delta=delta,
-            severity="critical",
-            description=f"Potential hardcoded secret(s) found in {len(secrets)} location(s).",
-            badge="🔒 Secret Detected",
-        ))
-        badges.append("🔒 Secret Detected")
-        recommendations.append("Remove hardcoded secrets and place credentials into environment variables.")
-
-    if complexities:
-        ast_warning_count += len(complexities)
-        delta = config.penalty_ast_complexity * len(complexities)
+            "LLM_ERROR_FINDINGS", "llm",
+            max(cfg.max_penalty_llm_errors, cfg.penalty_llm_error * len(errors)), "critical",
+            f"AI review found {len(errors)} error-level issue(s) (bugs, security or breaking changes).",
+            "🚨 AI Error"))
+        badges.append("🚨 AI Error")
+        recommendations.append("Fix the error-level issues flagged by the AI review before merging.")
+    if warnings:
         signals.append(HealthSignal(
-            code="AST_HIGH_COMPLEXITY",
-            category="ast",
-            score_delta=delta,
-            severity="warning",
-            description=f"High code complexity detected in {len(complexities)} function/method(s).",
-            badge="⚙️ High Complexity",
-        ))
-        recommendations.append("Refactor complex functions to improve maintainability and readability.")
-
-    if missing_docstrings:
-        raw_delta = config.penalty_ast_missing_docstring * len(missing_docstrings)
-        delta = max(config.max_penalty_docstrings, raw_delta)
+            "LLM_WARNING_FINDINGS", "llm",
+            max(cfg.max_penalty_llm_warnings, cfg.penalty_llm_warning * len(warnings)), "warning",
+            f"AI review found {len(warnings)} warning-level issue(s)."))
+    if infos:
         signals.append(HealthSignal(
-            code="AST_MISSING_DOCSTRINGS",
-            category="ast",
-            score_delta=delta,
-            severity="info",
-            description=f"{len(missing_docstrings)} public class/function(s) missing docstrings.",
-        ))
+            "LLM_INFO_FINDINGS", "llm",
+            max(cfg.max_penalty_llm_info, cfg.penalty_llm_info * len(infos)), "info",
+            f"AI review made {len(infos)} minor suggestion(s)."))
 
-    if unused_imports:
-        raw_delta = config.penalty_ast_unused_import * len(unused_imports)
-        delta = max(config.max_penalty_unused_imports, raw_delta)
-        signals.append(HealthSignal(
-            code="AST_UNUSED_IMPORTS",
-            category="ast",
-            score_delta=delta,
-            severity="info",
-            description=f"{len(unused_imports)} unused import(s) detected.",
-        ))
-
-    # ── 6. LLM Review Severity Signals ───────────────────────────────────────
-    llm_critical_count = 0
-    llm_warning_count = 0
-
-    llm_crits = [c for c in llm_comments if getattr(c, "severity", "") == "critical"]
-    llm_warns = [c for c in llm_comments if getattr(c, "severity", "") == "warning"]
-    llm_suggs = [c for c in llm_comments if getattr(c, "severity", "") == "suggestion"]
-    llm_praises = [c for c in llm_comments if getattr(c, "severity", "") == "praise"]
-
-    if llm_crits:
-        llm_critical_count += len(llm_crits)
-        delta = config.penalty_llm_critical * len(llm_crits)
-        signals.append(HealthSignal(
-            code="LLM_CRITICAL_FINDINGS",
-            category="llm",
-            score_delta=delta,
-            severity="critical",
-            description=f"AI Review identified {len(llm_crits)} critical issue(s) (bugs/security/breaking changes).",
-            badge="🚨 AI Critical Issue",
-        ))
-        badges.append("🚨 AI Critical Issue")
-
-    if llm_warns:
-        llm_warning_count += len(llm_warns)
-        delta = config.penalty_llm_warning * len(llm_warns)
-        signals.append(HealthSignal(
-            code="LLM_WARNING_FINDINGS",
-            category="llm",
-            score_delta=delta,
-            severity="warning",
-            description=f"AI Review identified {len(llm_warns)} warning-level issue(s).",
-        ))
-
-    if llm_suggs:
-        raw_delta = config.penalty_llm_suggestion * len(llm_suggs)
-        delta = max(config.max_penalty_llm_suggestions, raw_delta)
-        signals.append(HealthSignal(
-            code="LLM_SUGGESTION_FINDINGS",
-            category="llm",
-            score_delta=delta,
-            severity="info",
-            description=f"AI Review provided {len(llm_suggs)} suggestion(s) for optimization/style.",
-        ))
-
-    if llm_praises:
-        raw_bonus = config.bonus_llm_praise * len(llm_praises)
-        bonus = min(config.max_bonus_llm_praise, raw_bonus)
-        signals.append(HealthSignal(
-            code="LLM_PRAISE_COMMENTS",
-            category="llm",
-            score_delta=bonus,
-            severity="positive",
-            description=f"AI Review highlighted {len(llm_praises)} good pattern(s) in the code.",
-        ))
-
-    # ── 7. Score Calculation & Grading ───────────────────────────────────────
-    raw_score = config.base_score + sum(s.score_delta for s in signals)
-    score = max(0, min(100, raw_score))
-
-    # Grade & Risk Mapping
-    if score >= 90:
-        grade = "A+"
-        risk_level = "Low"
-        status_emoji = "💚"
-    elif score >= 80:
-        grade = "A"
-        risk_level = "Low"
-        status_emoji = "🟢"
-    elif score >= 70:
-        grade = "B"
-        risk_level = "Medium"
-        status_emoji = "🟡"
-    elif score >= 60:
-        grade = "C"
-        risk_level = "Medium"
-        status_emoji = "🟠"
-    elif score >= 40:
-        grade = "D"
-        risk_level = "High"
-        status_emoji = "🔴"
-    else:
-        grade = "F"
-        risk_level = "Critical"
-        status_emoji = "🚨"
-
-    # Deduplicate recommendations while preserving order
-    unique_recs = list(dict.fromkeys(recommendations))
+    # 6. Final score ---------------------------------------------------------
+    score = max(0, min(100, cfg.base_score + sum(s.score_delta for s in signals)))
+    grade, risk, emoji = _grade_for(score, cfg)
 
     return PRHealthReport(
         score=score,
         grade=grade,
-        risk_level=risk_level,
-        status_emoji=status_emoji,
+        risk_level=risk,
+        status_emoji=emoji,
         signals=signals,
-        badges=badges,
-        recommendations=unique_recs,
+        badges=list(dict.fromkeys(badges)),
+        recommendations=list(dict.fromkeys(recommendations)),
         total_additions=additions,
         total_deletions=deletions,
         total_files_changed=total_files,
         has_tests=has_tests,
-        ast_critical_count=ast_critical_count,
-        ast_warning_count=ast_warning_count,
-        llm_critical_count=llm_critical_count,
-        llm_warning_count=llm_warning_count,
+        static_critical_count=static_critical,
+        static_warning_count=static_warning,
+        llm_error_count=len(errors),
+        llm_warning_count=len(warnings),
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Markdown Formatter for GitHub Summary
+# GitHub markdown widget
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def format_health_score_markdown(report: PRHealthReport) -> str:
-    """
-    Format the PRHealthReport into a clean GitHub-flavored markdown widget.
-
-    Example Output:
-    ### 📊 PR Health Score: 85/100 (Grade: A) 🟢
-    **Risk Level:** Low | **Badges:** `✨ Concise PR` `🧪 Tests Included`
-    """
-    badges_str = " ".join(f"`{b}`" for b in report.badges) if report.badges else "_None_"
-    
+    """Compact markdown block appended to the GitHub review summary."""
+    badges = " ".join(f"`{b}`" for b in report.badges) if report.badges else "_none_"
     lines = [
-        f"### 📊 PR Health Score: **{report.score}/100** (Grade: **{report.grade}**) {report.status_emoji}\n",
-        f"**Risk Level:** `{report.risk_level}` | **Badges:** {badges_str}\n",
+        f"### 📊 PR Health: **{report.score}/100** (Grade **{report.grade}**) {report.status_emoji}",
+        "",
+        f"**Risk level:** `{report.risk_level}` | **Badges:** {badges}",
     ]
-
-    # Signal breakdown table or summary
-    positive_signals = [s for s in report.signals if s.score_delta > 0]
-    negative_signals = [s for s in report.signals if s.score_delta < 0]
-
-    if negative_signals:
-        lines.append("<details><summary><b>⚠️ Health Deductions & Signals</b></summary>\n")
-        lines.append("| Signal | Category | Impact | Description |")
-        lines.append("| :--- | :--- | :---: | :--- |")
-        for s in negative_signals:
-            lines.append(f"| `{s.code}` | _{s.category.capitalize()}_ | `{s.score_delta}` | {s.description} |")
-        lines.append("</details>\n")
-
+    deductions = [s for s in report.signals if s.score_delta < 0]
+    if deductions:
+        lines += ["", "<details><summary><b>Why this score?</b></summary>", "",
+                  "| Signal | Impact | Detail |", "| :--- | :---: | :--- |"]
+        for s in deductions:
+            lines.append(f"| `{s.code}` | `{s.score_delta}` | {s.description} |")
+        lines += ["", "</details>"]
     if report.recommendations:
-        lines.append("**💡 Key Recommendations:**")
-        for rec in report.recommendations:
-            lines.append(f"- {rec}")
-        lines.append("")
-
+        lines += ["", "**💡 Recommendations**"]
+        lines += [f"- {r}" for r in report.recommendations]
     return "\n".join(lines)
