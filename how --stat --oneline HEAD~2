@@ -1,0 +1,15 @@
+[33mc088b46[m feat: add review history and stats API endpoints
+ backend/config/urls.py                    |   80 [32m+[m[31m-[m
+ backend/reviews/health_scorer.py          |  697 [32m++++++[m[31m--------[m
+ backend/reviews/llm_reviewer.py           |  119 [32m++[m[31m-[m
+ backend/reviews/models.py                 |   14 [32m+[m[31m-[m
+ frontend/package-lock.json                | 1493 [32m++++++++++++++++++++++++++++[m[31m-[m
+ frontend/package.json                     |   13 [32m+[m[31m-[m
+ frontend/src/App.jsx                      |   11 [32m+[m[31m-[m
+ frontend/src/pages/Analytics.jsx          |  126 [32m++[m[31m-[m
+ frontend/src/pages/Dashboard.jsx          |  155 [32m+[m[31m--[m
+ frontend/src/pages/PullRequestDetails.jsx |   10 [32m+[m
+ frontend/src/pages/Reviews.jsx            |  142 [32m++[m[31m-[m
+ frontend/src/styles/global.css            |  324 [32m+++[m[31m----[m
+ frontend/vite.config.js                   |    8 [32m+[m[31m-[m
+ 13 files changed, 2294 insertions(+), 898 deletions(-)

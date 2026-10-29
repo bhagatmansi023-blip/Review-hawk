@@ -18,10 +18,10 @@ from django.contrib import admin
 from django.urls import include, path
 
 from reviews.api_views import (
-    DashboardStatsView,
     PullRequestDetailView,
     PullRequestListView,
     ReviewDetailView,
+    StatsView,
 )
 
 urlpatterns = [
@@ -32,10 +32,10 @@ urlpatterns = [
     path("api/repos/", include("repos.urls")),
     path("api/", include("reviews.api_urls")),
 
-    # Top-level PR and review endpoints
-    path("api/pull-requests/", PullRequestListView.as_view(), name="pull-requests-list"),
-    path("api/pull-requests/<int:pk>/", PullRequestDetailView.as_view(), name="pull-requests-detail"),
-    path("api/reviews/<int:pk>/", ReviewDetailView.as_view(), name="review-detail"),
+    # Top-level PR and review endpoints (separate from nested repo routes)
+    path("api/pull-requests/", PullRequestListView.as_view(), name="all-pull-requests-list"),
+    path("api/pull-requests/<int:pk>/", PullRequestDetailView.as_view(), name="all-pull-requests-detail"),
+    path("api/reviews/<int:pk>/", ReviewDetailView.as_view(), name="all-review-detail"),
     # Dashboard command center metrics
-    path("api/dashboard/stats/", DashboardStatsView.as_view(), name="dashboard-stats"),
+    path("api/dashboard/stats/", StatsView.as_view(), name="dashboard-stats"),
 ]
