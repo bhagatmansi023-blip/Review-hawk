@@ -37,6 +37,15 @@ class Review(models.Model):
     head_sha = models.CharField(max_length=40)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     summary = models.TextField(blank=True)
+
+    
+    # Health Scoring Fields
+    health_score = models.IntegerField(null=True, blank=True)
+    health_grade = models.CharField(max_length=10, blank=True)
+    risk_level = models.CharField(max_length=50, blank=True)
+    health_details = models.JSONField(null=True, blank=True)
+
+    
     error_message = models.TextField(blank=True)
 
     # Stats for the dashboard

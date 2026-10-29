@@ -1,205 +1,305 @@
 """
 reviews/api_views.py
 ====================
-REST API endpoints for Review-hawk pull requests, reviews, and dashboard statistics.
-"""
+Read-only REST API behind the dashboard:
 
+  GET /api/repos/<repo_id>/pulls/     pull requests of one repo (+ latest review)
+  GET /api/pull-requests/<id>/        one PR with findings + health breakdown
+  GET /api/reviews/                   review history (filters: repo, status, q)
+  GET /api/reviews/<id>/              one review with all findings
+  GET /api/stats/?days=30&repo=<id>   numbers and chart series for the dashboard
+
+Every query is restricted to repositories owned by the logged-in user.
+"""
 from __future__ import annotations
 
-import logging
-from django.db.models import Count, Q
-from rest_framework import permissions, status
+from collections import defaultdict
+from datetime import datetime, time, timedelta
+
+from django.db.models import Avg, Count, Prefetch, Q
+from django.db.models.functions import TruncDate
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from rest_framework.generics import ListAPIView, RetrieveAPIView
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from repos.models import PullRequest, Repository
-from reviews.models import Review, ReviewComment
-from reviews.serializers import (
+
+from .models import Review, ReviewComment
+from .serializers import (
+    RULE_LABELS,
     PullRequestDetailSerializer,
-    PullRequestListSerializer,
+    PullRequestSerializer,
     ReviewDetailSerializer,
     ReviewSummarySerializer,
 )
 
-logger = logging.getLogger(__name__)
+SEVERITIES = ["error", "warning", "info"]
+GRADES = ["A+", "A", "B", "C", "D", "F"]
 
 
 class StandardPagination(PageNumberPagination):
-    page_size = 15
+    page_size = 10
     page_size_query_param = "page_size"
     max_page_size = 100
 
 
-class PullRequestListView(APIView):
-    """
-    GET /api/repos/{repo_id}/pulls/  or  GET /api/pull-requests/
+def _user_repo(user, repo_id: int) -> Repository:
+    """Repo by local id, falling back to GitHub's repo id. 404 if not the user's."""
+    repos = Repository.objects.filter(user=user)
+    repo = repos.filter(pk=repo_id).first() or repos.filter(github_repo_id=repo_id).first()
+    if repo is None:
+        from rest_framework.exceptions import NotFound
+        raise NotFound("Repository not found.")
+    return repo
 
-    List pull requests with optional filtering:
-    - ?state=open|closed|merged|all
-    - ?search=keyword (matches title, author, or PR number)
-    - ?repository=id_or_github_id
-    """
 
-    permission_classes = [permissions.IsAuthenticated]
+def _prs_with_reviews(qs):
+    """Prefetch reviews newest-first with their comments (avoids N+1 queries)."""
+    return qs.select_related("repository").prefetch_related(
+        Prefetch(
+            "reviews",
+            queryset=Review.objects.select_related("pull_request__repository")
+            .prefetch_related("comments")
+            .order_by("-created_at"),
+        )
+    )
 
-    def get(self, request, repo_id: int | None = None):
-        user = request.user
-        queryset = PullRequest.objects.filter(repository__user=user).select_related("repository")
 
-        # Filter by repo_id from URL or query parameter
-        target_repo_id = repo_id or request.query_params.get("repository")
-        if target_repo_id:
-            queryset = queryset.filter(
-                Q(repository_id=target_repo_id) | Q(repository__github_repo_id=target_repo_id)
-            )
+# ─────────────────────────────────────────────────────────────────────────────
+# Pull requests
+# ─────────────────────────────────────────────────────────────────────────────
 
-        # Filter by state
-        state = request.query_params.get("state")
-        if state and state.lower() != "all":
-            queryset = queryset.filter(state=state.lower())
 
-        # Search filter
-        search = request.query_params.get("search")
+class RepoPullRequestListView(ListAPIView):
+    """GET /api/repos/<repo_id>/pulls/?state=&search=&page="""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = PullRequestSerializer
+    pagination_class = StandardPagination
+
+    def get_queryset(self):
+        repo = _user_repo(self.request.user, self.kwargs["repo_id"])
+        qs = _prs_with_reviews(PullRequest.objects.filter(repository=repo))
+
+        state = self.request.query_params.get("state", "").lower()
+        if state in {"open", "closed", "merged"}:
+            qs = qs.filter(state=state)
+
+        search = self.request.query_params.get("search", "").strip()
         if search:
-            search = search.strip()
-            num_filter = Q(number=int(search)) if search.isdigit() else Q()
-            queryset = queryset.filter(
-                Q(title__icontains=search) | Q(author__icontains=search) | num_filter
-            )
-
-        queryset = queryset.order_by("-updated_at")
-
-        paginator = StandardPagination()
-        page = paginator.paginate_queryset(queryset, request)
-        if page is not None:
-            serializer = PullRequestListSerializer(page, many=True)
-            return paginator.get_paginated_response(serializer.data)
-
-        serializer = PullRequestListSerializer(queryset, many=True)
-        return Response(serializer.data)
+            cond = Q(title__icontains=search) | Q(author__icontains=search)
+            if search.lstrip("#").isdigit():
+                cond |= Q(number=int(search.lstrip("#")))
+            qs = qs.filter(cond)
+        return qs.order_by("-updated_at")
 
 
-class PullRequestDetailView(APIView):
-    """
-    GET /api/pull-requests/{id}/  or  GET /api/repos/{repo_id}/pulls/{id}/
+class PullRequestDetailView(RetrieveAPIView):
+    """GET /api/pull-requests/<id>/"""
 
-    Retrieve full details for a pull request, including repository metadata,
-    latest review verdict, and all code findings/comments.
-    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = PullRequestDetailSerializer
 
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request, pk: int | None = None, repo_id: int | None = None):
-        user = request.user
-        queryset = PullRequest.objects.filter(repository__user=user).select_related("repository")
-
-        target_id = pk or self.kwargs.get("id")
-        if repo_id:
-            # Match either by PR PK or by PR number within the specific repo
-            pr = queryset.filter(
-                Q(repository_id=repo_id) | Q(repository__github_repo_id=repo_id)
-            ).filter(Q(id=target_id) | Q(number=target_id)).first()
-        else:
-            pr = queryset.filter(Q(id=target_id) | Q(number=target_id)).first()
-
-        if pr is None:
-            return Response(
-                {"detail": f"Pull request '{target_id}' not found."},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        serializer = PullRequestDetailSerializer(pr)
-        return Response(serializer.data)
+    def get_queryset(self):
+        return _prs_with_reviews(
+            PullRequest.objects.filter(repository__user=self.request.user)
+        )
 
 
-class ReviewDetailView(APIView):
-    """
-    GET /api/reviews/{id}/
-
-    Retrieve full review execution run and all comments.
-    """
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request, pk: int):
-        user = request.user
-        try:
-            review = Review.objects.select_related("pull_request__repository").get(
-                pk=pk, pull_request__repository__user=user
-            )
-        except Review.DoesNotExist:
-            return Response(
-                {"detail": f"Review {pk} not found."}, status=status.HTTP_404_NOT_FOUND
-            )
-
-        serializer = ReviewDetailSerializer(review)
-        return Response(serializer.data)
+# ─────────────────────────────────────────────────────────────────────────────
+# Reviews
+# ─────────────────────────────────────────────────────────────────────────────
 
 
-class DashboardStatsView(APIView):
-    """
-    GET /api/dashboard/stats/
+def _annotated_reviews(user):
+    return (
+        Review.objects.filter(pull_request__repository__user=user)
+        .select_related("pull_request__repository")
+        .annotate(
+            total_count=Count("comments"),
+            error_count=Count("comments", filter=Q(comments__severity="error")),
+            warning_count=Count("comments", filter=Q(comments__severity="warning")),
+            info_count=Count("comments", filter=Q(comments__severity="info")),
+            llm_count=Count("comments", filter=Q(comments__source="llm")),
+            static_count=Count("comments", filter=Q(comments__source="static")),
+        )
+    )
 
-    Aggregated metrics and health overview for the Review Hawk command center.
-    """
 
-    permission_classes = [permissions.IsAuthenticated]
+class ReviewListView(ListAPIView):
+    """GET /api/reviews/?repo=<id>&status=<status>&q=<text>"""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = ReviewSummarySerializer
+    pagination_class = StandardPagination
+
+    def get_queryset(self):
+        qs = _annotated_reviews(self.request.user)
+        params = self.request.query_params
+
+        repo = params.get("repo")
+        if repo and repo.isdigit():
+            qs = qs.filter(pull_request__repository_id=int(repo))
+
+        status = params.get("status", "").lower()
+        if status in {s.value for s in Review.Status}:
+            qs = qs.filter(status=status)
+
+        q = params.get("q", "").strip()
+        if q:
+            cond = Q(pull_request__title__icontains=q) | Q(pull_request__author__icontains=q)
+            if q.lstrip("#").isdigit():
+                cond |= Q(pull_request__number=int(q.lstrip("#")))
+            qs = qs.filter(cond)
+        return qs.order_by("-created_at")
+
+
+class ReviewDetailView(RetrieveAPIView):
+    """GET /api/reviews/<id>/"""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = ReviewDetailSerializer
+
+    def get_queryset(self):
+        return _annotated_reviews(self.request.user).prefetch_related("comments")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dashboard statistics
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class StatsView(APIView):
+    """GET /api/stats/?days=30&repo=<local repo id>"""
+
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user = request.user
+        try:
+            days = max(1, min(365, int(request.query_params.get("days", 30))))
+        except ValueError:
+            days = 30
 
-        # User's connected repositories
-        user_repos = Repository.objects.filter(user=user)
-        connected_repos_count = user_repos.filter(is_enabled=True).count()
-        total_repos_count = user_repos.count()
+        repos = Repository.objects.filter(user=request.user)
+        repo_param = request.query_params.get("repo")
+        if repo_param and repo_param.isdigit():
+            repos = repos.filter(pk=int(repo_param))
 
-        # Reviews for this user's repos
-        user_reviews = Review.objects.filter(pull_request__repository__user=user)
-        total_prs_reviewed = user_reviews.filter(status=Review.Status.COMPLETED).values("pull_request").distinct().count()
+        today = timezone.now().date()
+        start_date = today - timedelta(days=days - 1)
+        since = timezone.make_aware(datetime.combine(start_date, time.min))
 
-        # Review findings / comments
-        comments_qs = ReviewComment.objects.filter(review__pull_request__repository__user=user)
-        total_findings_count = comments_qs.count()
+        reviews = Review.objects.filter(pull_request__repository__in=repos, created_at__gte=since)
+        comments = ReviewComment.objects.filter(review__in=reviews)
 
-        severity_counts = {
-            "error": comments_qs.filter(severity=ReviewComment.Severity.ERROR).count(),
-            "warning": comments_qs.filter(severity=ReviewComment.Severity.WARNING).count(),
-            "info": comments_qs.filter(severity=ReviewComment.Severity.INFO).count(),
+        # ── totals ─────────────────────────────────────────────────────────
+        rv = reviews.aggregate(
+            total=Count("id"),
+            completed=Count("id", filter=Q(status=Review.Status.COMPLETED)),
+            failed=Count("id", filter=Q(status=Review.Status.FAILED)),
+            avg_health=Avg("health_score"),
+        )
+        cm = comments.aggregate(
+            total=Count("id"),
+            llm=Count("id", filter=Q(source="llm")),
+            static=Count("id", filter=Q(source="static")),
+        )
+        durations = [
+            (f - s).total_seconds()
+            for s, f in reviews.filter(
+                status=Review.Status.COMPLETED, started_at__isnull=False, finished_at__isnull=False
+            ).values_list("started_at", "finished_at")[:1000]
+        ]
+        totals = {
+            "repositories": repos.count(),
+            "pull_requests_reviewed": reviews.values("pull_request").distinct().count(),
+            "reviews": rv["total"],
+            "completed": rv["completed"],
+            "failed": rv["failed"],
+            "findings": cm["total"],
+            "ai_findings": cm["llm"],
+            "static_findings": cm["static"],
+            "avg_health_score": round(rv["avg_health"], 1) if rv["avg_health"] is not None else None,
+            "avg_review_seconds": round(sum(durations) / len(durations), 1) if durations else None,
         }
 
-        category_counts = {}
-        for cat_choice in ReviewComment.Category.choices:
-            cat_key = cat_choice[0]
-            category_counts[cat_key] = comments_qs.filter(category=cat_key).count()
+        # ── breakdowns ─────────────────────────────────────────────────────
+        sev_counts = {r["severity"]: r["n"] for r in comments.values("severity").annotate(n=Count("id"))}
+        severity_breakdown = [{"severity": s, "count": sev_counts.get(s, 0)} for s in SEVERITIES]
 
-        # Recent review activity
-        recent_reviews = user_reviews.select_related("pull_request__repository").order_by("-created_at")[:6]
-        recent_activity_data = []
-        for r in recent_reviews:
-            recent_activity_data.append(
-                {
-                    "review_id": r.id,
-                    "repo_name": r.pull_request.repository.name,
-                    "pr_number": r.pull_request.number,
-                    "pr_title": r.pull_request.title,
-                    "status": r.status,
-                    "head_sha": r.head_sha[:7],
-                    "llm_model": r.llm_model,
-                    "duration_seconds": r.duration_seconds,
-                    "created_at": r.created_at,
-                    "finished_at": r.finished_at,
-                }
-            )
+        category_breakdown = [
+            {"category": r["category"], "count": r["n"]}
+            for r in comments.values("category").annotate(n=Count("id")).order_by("-n")
+        ]
+        source_breakdown = [
+            {"source": "llm", "label": "AI review", "count": cm["llm"]},
+            {"source": "static", "label": "Tree-sitter", "count": cm["static"]},
+        ]
+        top_rules = [
+            {"rule_id": r["rule_id"], "label": RULE_LABELS.get(r["rule_id"], r["rule_id"]), "count": r["n"]}
+            for r in comments.filter(source="static").exclude(rule_id="")
+            .values("rule_id").annotate(n=Count("id")).order_by("-n")[:5]
+        ]
 
-        return Response(
-            {
-                "connected_repos_count": connected_repos_count,
-                "total_repos_count": total_repos_count,
-                "total_prs_reviewed": total_prs_reviewed,
-                "total_findings_count": total_findings_count,
-                "findings_by_severity": severity_counts,
-                "findings_by_category": category_counts,
-                "recent_activity": recent_activity_data,
-            }
-        )
+        grade_counts = {
+            r["health_grade"]: r["n"]
+            for r in reviews.exclude(health_grade="").values("health_grade").annotate(n=Count("id"))
+        }
+        health_distribution = [{"grade": g, "count": grade_counts.get(g, 0)} for g in GRADES]
+
+        # ── time series (zero-filled so charts have no gaps) ───────────────
+        per_day = defaultdict(lambda: {"error": 0, "warning": 0, "info": 0, "reviews": 0})
+        for r in (comments.annotate(day=TruncDate("created_at"))
+                  .values("day", "severity").annotate(n=Count("id"))):
+            if r["severity"] in SEVERITIES:
+                per_day[r["day"]][r["severity"]] += r["n"]
+        for r in reviews.annotate(day=TruncDate("created_at")).values("day").annotate(n=Count("id")):
+            per_day[r["day"]]["reviews"] += r["n"]
+
+        issues_over_time = []
+        for i in range(days):
+            d = start_date + timedelta(days=i)
+            row = per_day.get(d, {"error": 0, "warning": 0, "info": 0, "reviews": 0})
+            issues_over_time.append({
+                "date": d.isoformat(),
+                **{k: row[k] for k in ("error", "warning", "info")},
+                "total": row["error"] + row["warning"] + row["info"],
+                "reviews": row["reviews"],
+            })
+
+        # ── per repository ─────────────────────────────────────────────────
+        findings_by_repo = {
+            r["review__pull_request__repository_id"]: r["n"]
+            for r in comments.values("review__pull_request__repository_id").annotate(n=Count("id"))
+        }
+        per_repo = []
+        for r in (reviews.values("pull_request__repository_id", "pull_request__repository__owner",
+                                 "pull_request__repository__name")
+                  .annotate(n=Count("id"), avg=Avg("health_score")).order_by("-n")):
+            rid = r["pull_request__repository_id"]
+            per_repo.append({
+                "repository_id": rid,
+                "repository_name": f'{r["pull_request__repository__owner"]}/{r["pull_request__repository__name"]}',
+                "reviews": r["n"],
+                "findings": findings_by_repo.get(rid, 0),
+                "avg_health_score": round(r["avg"], 1) if r["avg"] is not None else None,
+            })
+
+        recent = _annotated_reviews(request.user).filter(pull_request__repository__in=repos).order_by("-created_at")[:5]
+
+        return Response({
+            "range_days": days,
+            "totals": totals,
+            "severity_breakdown": severity_breakdown,
+            "category_breakdown": category_breakdown,
+            "source_breakdown": source_breakdown,
+            "top_rules": top_rules,
+            "health_distribution": health_distribution,
+            "issues_over_time": issues_over_time,
+            "per_repository": per_repo,
+            "recent_reviews": ReviewSummarySerializer(recent, many=True, context={"request": request}).data,
+        })
