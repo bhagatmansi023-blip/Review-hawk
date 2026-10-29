@@ -31,7 +31,10 @@ SECRET_KEY = 'django-insecure-qzbs^5z)-m((09^9!uddn&84l3cg70(^=$efdwcnq*sow5y_j6
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["localhost", "127.0.0.1", "*"]
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '.ngrok-free.app', '.smee.io']
+
+# Default primary key type (silences W042 warnings)
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # Application definition
@@ -213,4 +216,4 @@ CELERY_WORKER_CONCURRENCY = env.int("CELERY_WORKER_CONCURRENCY", default=2)
 
 # API key for Google Gemini (generativeai SDK)
 GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
-GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-2.5-flash")
+GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-2.5-flash")
