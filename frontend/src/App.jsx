@@ -6,6 +6,7 @@ import { RepoProvider } from './context/RepoContext';
 import AuthLayout from './layouts/AuthLayout';
 import AppLayout from './layouts/AppLayout';
 import ProtectedRoute from './components/common/ProtectedRoute';
+import ErrorBoundary from './components/common/ErrorBoundary';
 
 import Login from './pages/Login';
 import AuthCallback from './pages/AuthCallback';
@@ -26,7 +27,8 @@ export default function App() {
         <RepoProvider>
           <BrowserRouter>
             <Suspense fallback={<div className="chart-skeleton" style={{ height: 240, margin: 32 }} role="status" aria-label="Loading page" />}>
-            <Routes>
+              <ErrorBoundary>
+                <Routes>
               {/* Root route redirects to dashboard (protected route will gate unauthenticated users to /login) */}
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
@@ -52,6 +54,7 @@ export default function App() {
               {/* Catch-all route redirects to /dashboard */}
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
+              </ErrorBoundary>
             </Suspense>
           </BrowserRouter>
         </RepoProvider>

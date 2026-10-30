@@ -1,4 +1,4 @@
-"""
+﻿"""
 reviews/views.py
 ================
 GitHub webhook receiver for Review-hawk.
@@ -39,6 +39,9 @@ REVIEW_TRIGGER_ACTIONS = {"opened", "synchronize", "reopened"}
 
 def verify_signature(payload_body: bytes, secret_token: str, signature_header: str | None) -> bool:
     """Verify that the payload was sent from GitHub by validating SHA256."""
+    if not secret_token:
+        logger.warning("GITHUB_WEBHOOK_SECRET is not configured � accepting webhook without signature verification.")
+        return True
     if not signature_header:
         return False
 
@@ -86,9 +89,12 @@ def github_webhook(request):
     # ── Persist audit record ───────────────────────────────────────────────
     repo_data = payload.get("repository", {})
     github_repo_id = repo_data.get("id")
+    repo_full_name = repo_data.get("full_name", "")
     db_repo = None
     if github_repo_id:
         db_repo = Repository.objects.filter(github_repo_id=github_repo_id).first()
+    if not db_repo and repo_full_name:
+        db_repo = Repository.objects.filter(full_name=repo_full_name).first()
 
     webhook_event = None
     if delivery_id:
@@ -206,4 +212,14 @@ def _handle_pull_request(
         webhook_event.save(update_fields=["processed"])
 
     # ── Dispatch Celery task ───────────────────────────────────────────────
-    run_llm_review.delay(review.pk)
+    try:
+        from django.conf import settings
+        if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
+            from reviews.llm_reviewer import run_review
+            run_review(review.pk)
+        else:
+            run_llm_review.delay(review.pk)
+    except Exception as exc:
+        logger.warning("Celery dispatch error (%s); falling back to inline review execution.", exc)
+        from reviews.llm_reviewer import run_review
+        run_review(review.pk)

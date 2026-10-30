@@ -55,7 +55,7 @@ export default function Dashboard() {
             <div className="active-repo-title-row">
               <FolderGit2 size={24} className="active-repo-icon" />
               <div>
-                <h3 className="active-repo-name">{primaryRepo.full_name || `${primaryRepo.owner}/${primaryRepo.name}`}</h3>
+                <h3 className="active-repo-name">{primaryRepo.full_name || `${typeof primaryRepo.owner === 'object' ? primaryRepo.owner?.login : primaryRepo.owner}/${primaryRepo.name}`}</h3>
                 <div className="active-repo-meta">
                   <span className="meta-item">
                     <GitBranch size={13} />

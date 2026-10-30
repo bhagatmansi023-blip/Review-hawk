@@ -41,7 +41,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='review',
             name='health_grade',
-            field=models.CharField(blank=True, max_length=10),
+            field=models.CharField(blank=True, max_length=10, null=True, default=''),
         ),
         migrations.AddField(
             model_name='review',
@@ -51,6 +51,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='review',
             name='risk_level',
-            field=models.CharField(blank=True, max_length=50),
+            field=models.CharField(blank=True, max_length=50, null=True, default=''),
         ),
     ]

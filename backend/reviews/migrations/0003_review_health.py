@@ -10,7 +10,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.AddField(
+        migrations.AlterField(
             model_name='review',
             name='health_grade',
             field=models.CharField(blank=True, max_length=2),
@@ -18,9 +18,9 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='review',
             name='health_report',
-            field=models.JSONField(blank=True, default=dict),
+            field=models.JSONField(blank=True, default=dict, null=True),
         ),
-        migrations.AddField(
+        migrations.AlterField(
             model_name='review',
             name='health_score',
             field=models.PositiveSmallIntegerField(blank=True, null=True),

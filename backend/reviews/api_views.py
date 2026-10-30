@@ -82,8 +82,12 @@ class RepoPullRequestListView(ListAPIView):
     pagination_class = StandardPagination
 
     def get_queryset(self):
-        repo = _user_repo(self.request.user, self.kwargs["repo_id"])
-        qs = _prs_with_reviews(PullRequest.objects.filter(repository=repo))
+        repo_id = self.kwargs.get('repo_id') or self.request.query_params.get('repository') or self.request.query_params.get('repo')
+        if repo_id:
+            repo = _user_repo(self.request.user, repo_id)
+            qs = _prs_with_reviews(PullRequest.objects.filter(repository=repo))
+        else:
+            qs = _prs_with_reviews(PullRequest.objects.filter(repository__user=self.request.user))
 
         state = self.request.query_params.get("state", "").lower()
         if state in {"open", "closed", "merged"}:

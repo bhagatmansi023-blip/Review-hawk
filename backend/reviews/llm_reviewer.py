@@ -765,15 +765,23 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
         head_sha=review.head_sha,
         diff=raw_diff,
     )
-    logger.info("Calling Gemini model=%s for review_id=%d …", GEMINI_MODEL, review.pk)
-    raw_text, input_tokens, output_tokens = _call_gemini(user_prompt)
-    logger.info("Gemini response: %d in, %d out tokens", input_tokens, output_tokens)
-
-    # ── 5. Parse LLM response ───────────────────────────────────────────────
-    result = _parse_llm_response(raw_text)
-    result.raw_response = raw_text
-    result.input_tokens = input_tokens
-    result.output_tokens = output_tokens
+    result = LLMReviewResult(summary="Automated review", score=5.0)
+    input_tokens, output_tokens = 0, 0
+    raw_text = ""
+    if GEMINI_API_KEY:
+        try:
+            logger.info("Calling Gemini model=%s for review_id=%d …", GEMINI_MODEL, review.pk)
+            raw_text, input_tokens, output_tokens = _call_gemini(user_prompt)
+            result = _parse_llm_response(raw_text)
+            result.raw_response = raw_text
+            result.input_tokens = input_tokens
+            result.output_tokens = output_tokens
+        except Exception as exc:
+            logger.warning("Gemini call failed for review %d (%s) — continuing with Tree-sitter.", review.pk, exc)
+            result.summary = f"Static analysis review (LLM call failed: {exc})"
+    else:
+        logger.info("GEMINI_API_KEY not configured — continuing with Tree-sitter static analysis.")
+        result.summary = "Automated static analysis review (Tree-sitter). Set GEMINI_API_KEY to activate AI review comments."
 
     # ── 6. Tree-sitter static analysis ─────────────────────────────────────
     static_findings: list = []
@@ -853,14 +861,18 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     logger.info("Saved %d comments (%d LLM, %d static)", len(db_comments), len(result.comments), len(final_static))
 
     # ── 10. Post to GitHub ──────────────────────────────────────────────────
-    github_review_id = _post_github_review(
-        gh=gh,
-        review=review,
-        result=result,
-        static_findings=final_static,
-        position_map=position_map,
-        health_markdown=health_markdown,
-    )
+    github_review_id = None
+    try:
+        github_review_id = _post_github_review(
+            gh=gh,
+            review=review,
+            result=result,
+            static_findings=final_static,
+            position_map=position_map,
+            health_markdown=health_markdown,
+        )
+    except Exception as exc:
+        logger.warning("Posting review to GitHub failed for review %d (%s) — review saved locally in DB.", review.pk, exc)
 
     # ── 11. Mark posted + complete ──────────────────────────────────────────
     now = datetime.now(tz=timezone.utc)
