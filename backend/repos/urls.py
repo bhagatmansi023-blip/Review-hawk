@@ -1,7 +1,7 @@
 from django.urls import path
 
 from .views import ListGitHubReposView, RegisterWebhookView, UnregisterWebhookView
-from reviews.api_views import (PullRequestDetailView,RepoPullRequestListView)
+from reviews.api_views import PullRequestDetailView, RepoPullRequestListView
 
 urlpatterns = [
     # GET  /api/repos/                                → list all GitHub repos

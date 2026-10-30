@@ -33,24 +33,4 @@ class Migration(migrations.Migration):
                 help_text="Timestamp when the review was successfully posted to GitHub.",
             ),
         ),
-        migrations.AddField(
-            model_name='review',
-            name='health_details',
-            field=models.JSONField(blank=True, null=True),
-        ),
-        migrations.AddField(
-            model_name='review',
-            name='health_grade',
-            field=models.CharField(blank=True, max_length=10, null=True, default=''),
-        ),
-        migrations.AddField(
-            model_name='review',
-            name='health_score',
-            field=models.IntegerField(blank=True, null=True),
-        ),
-        migrations.AddField(
-            model_name='review',
-            name='risk_level',
-            field=models.CharField(blank=True, max_length=50, null=True, default=''),
-        ),
     ]

@@ -102,6 +102,39 @@ class RepoPullRequestListView(ListAPIView):
         return qs.order_by("-updated_at")
 
 
+class PullRequestListView(ListAPIView):
+    """GET /api/pull-requests/?state=&search=&page=
+
+    Returns pull requests across all repositories owned by the logged-in user.
+    Optionally scoped by ?repository=<id>.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = PullRequestSerializer
+    pagination_class = StandardPagination
+
+    def get_queryset(self):
+        qs = _prs_with_reviews(
+            PullRequest.objects.filter(repository__user=self.request.user)
+        )
+
+        repo_param = self.request.query_params.get("repository", "").strip()
+        if repo_param.isdigit():
+            qs = qs.filter(repository_id=int(repo_param))
+
+        state = self.request.query_params.get("state", "").lower()
+        if state in {"open", "closed", "merged"}:
+            qs = qs.filter(state=state)
+
+        search = self.request.query_params.get("search", "").strip()
+        if search:
+            cond = Q(title__icontains=search) | Q(author__icontains=search)
+            if search.lstrip("#").isdigit():
+                cond |= Q(number=int(search.lstrip("#")))
+            qs = qs.filter(cond)
+        return qs.order_by("-updated_at")
+
+
 class PullRequestDetailView(RetrieveAPIView):
     """GET /api/pull-requests/<id>/"""
 

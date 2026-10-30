@@ -196,52 +196,82 @@ def extract_changed_lines(raw_diff: str) -> dict[str, set[int]]:
 def merge_and_dedupe(
     llm_comments: list["LLMComment"],
     static_findings: list,
+    proximity_window: int = 2,
 ) -> tuple[list["LLMComment"], list]:
     """
-    Merge LLM and tree-sitter findings, deduplicating by (file_path, line_number).
+    Merge LLM and tree-sitter findings with proximity-aware deduplication.
 
     Strategy
     --------
-    - If both flag the **same line**: keep the tree-sitter finding (deterministic,
-      rule-based) and append ``[LLM also flagged]`` to its message.  Drop the
-      duplicate LLM comment for that line.
-    - Lines flagged only by LLM → kept as-is.
-    - Lines flagged only by tree-sitter → kept as-is.
-
-    Returns
-    -------
-    (filtered_llm_comments, annotated_static_findings)
+    - Matches static findings with LLM comments on the same file within
+      ``proximity_window`` lines (default: +/- 2 lines).
+    - If matched:
+      * Keeps the tree-sitter finding (deterministic, rule-based).
+      * Inherits the LLM's concrete fix if static finding lacks a suggestion.
+      * Enriches the static message with AI explanation.
+      * Upgrades severity if the LLM flagged it as more severe (e.g. error vs warning).
+      * Drops the duplicate LLM comment to avoid repeating warnings on the PR.
+    - Findings/comments unique to only LLM or only tree-sitter are preserved.
     """
-    # Build lookup: lines covered by static findings
-    static_keys: set[tuple[str, int]] = {
-        (f.file_path, f.line_number) for f in static_findings
-    }
-    llm_keys: set[tuple[str, int]] = {
-        (c.file_path, c.line_number) for c in llm_comments
-    }
+    severity_order = {"error": 3, "warning": 2, "info": 1}
 
-    # Annotate static findings confirmed by the LLM
     annotated_static: list = []
+    matched_llm_indices: set[int] = set()
+
     for finding in static_findings:
-        key = (finding.file_path, finding.line_number)
-        if key in llm_keys:
-            finding.message += "  \u26a0\ufe0f *LLM also flagged this line.*"
+        best_idx: int | None = None
+        best_dist = proximity_window + 1
+
+        for idx, comment in enumerate(llm_comments):
+            if idx in matched_llm_indices:
+                continue
+            if comment.file_path != finding.file_path:
+                continue
+
+            dist = abs(comment.line_number - finding.line_number)
+            if dist <= proximity_window and dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+
+        if best_idx is not None:
+            matched_llm_indices.add(best_idx)
+            matched_llm = llm_comments[best_idx]
+
+            # Upgrade severity if LLM marked it higher
+            if severity_order.get(matched_llm.severity, 1) > severity_order.get(finding.severity, 1):
+                finding.severity = matched_llm.severity
+
+            # Inherit AI fix suggestion if missing
+            if not getattr(finding, "suggestion", None) and matched_llm.suggestion:
+                finding.suggestion = matched_llm.suggestion
+
+            # Annotate message with LLM insight
+            if best_dist == 0:
+                finding.message += "  ⚠️ *LLM also flagged this line.*"
+            else:
+                finding.message += f"  ⚠️ *LLM also flagged nearby line {matched_llm.line_number}.*"
+
+            if matched_llm.message and matched_llm.message not in finding.message:
+                finding.message += f"\n\n*AI Insight:* {matched_llm.message}"
+
         annotated_static.append(finding)
 
-    # Drop LLM comments that duplicate a static finding on the same line
+    # Drop LLM comments that were merged into static findings
     filtered_llm = [
-        c for c in llm_comments
-        if (c.file_path, c.line_number) not in static_keys
+        c for idx, c in enumerate(llm_comments)
+        if idx not in matched_llm_indices
     ]
 
     logger.info(
-        "merge_and_dedupe: %d LLM + %d static → %d LLM kept, %d static kept",
+        "merge_and_dedupe: %d LLM + %d static → %d LLM kept, %d static kept (fused %d)",
         len(llm_comments),
         len(static_findings),
         len(filtered_llm),
         len(annotated_static),
+        len(matched_llm_indices),
     )
     return filtered_llm, annotated_static
+
 
 
 # ---------------------------------------------------------------------------

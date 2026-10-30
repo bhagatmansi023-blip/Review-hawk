@@ -29,40 +29,16 @@ _STUBS = {
 for k, v in _STUBS.items():
     os.environ.setdefault(k, v)
 
-# ── 2. After env-vars are set, configure Django (pytest-django reads
-#    DJANGO_SETTINGS_MODULE from pytest.ini, but we still need settings
-#    accessible for the DB override below).
-import django
 from django.conf import settings as _settings
 
-
-def pytest_configure(config):
-    """Switch DB to SQLite and make Celery eager — called before collection."""
-    # Django isn't set up yet at this point; we hook into django_settings
-    # via an app-ready signal in the fixture below instead.
-    pass
-
-
-# ── 3. Override DB + Celery once Django settings are loaded ─────────────────
-#    Use the django_settings fixture pattern: a session-scoped autouse fixture.
+_settings.CELERY_TASK_ALWAYS_EAGER = True
+_settings.CELERY_TASK_EAGER_PROPAGATES = True
 
 import pytest
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _override_settings_for_tests(django_db_setup=None):
-    """
-    Switch to SQLite and enable eager Celery for the entire test session.
-    Must run before any DB access; scope=session means it runs once.
-    """
-    from django.test.utils import override_settings
-    # We can't use override_settings as a context manager at session scope,
-    # so we patch directly — this is safe because tests run in isolation.
-    _settings.DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": ":memory:",
-        }
-    }
+def _override_settings_for_tests():
+    """Ensure eager Celery throughout the test session."""
     _settings.CELERY_TASK_ALWAYS_EAGER = True
     _settings.CELERY_TASK_EAGER_PROPAGATES = True
