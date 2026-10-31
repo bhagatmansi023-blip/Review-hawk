@@ -48,7 +48,7 @@ class Review(models.Model):
     # Rule-based PR health score (see reviews/health_scorer.py)
     health_score = models.PositiveSmallIntegerField(null=True, blank=True)  # 0-100
     health_grade = models.CharField(max_length=2, blank=True)               # A+ .. F
-    health_report = models.JSONField(default=dict, blank=True, null=True)              # signals, badges, tips
+    health_report = models.JSONField(default=dict, blank=True)              # signals, badges, tips
 
     github_review_id = models.BigIntegerField(null=True, blank=True)  # set once posted
     installation_id = models.BigIntegerField(null=True, blank=True)   # GitHub App installation

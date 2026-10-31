@@ -8,6 +8,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from reviews.sync import ensure_repo_webhook, remove_repo_webhook, sync_open_pull_requests
+
 from .models import Repository
 from .serializers import GitHubRepoSerializer, RepositorySerializer
 
@@ -178,11 +180,18 @@ class RegisterWebhookView(APIView):
 
             detail = "Repository registered for AI review." if created else "Repository re-enabled for AI review."
             logger.info("%s %s/%s", detail, owner, name)
+
+            # Make GitHub actually send PR events, and import PRs that are already open.
+            webhook_msg = ensure_repo_webhook(gh_repo, db_repo)
+            imported = sync_open_pull_requests(gh_repo, db_repo)
+
             results.append(
                 {
                     "full_name": f"{owner}/{name}",
                     "success": True,
                     "detail": detail,
+                    "webhook": webhook_msg,
+                    "pull_requests_imported": imported,
                     "repo": RepositorySerializer(db_repo).data,
                 }
             )
@@ -220,6 +229,12 @@ class UnregisterWebhookView(APIView):
 
         db_repo.is_enabled = False
         db_repo.save(update_fields=["is_enabled", "updated_at"])
+        gh = _get_github_client(request.user)
+        if gh is not None and db_repo.webhook_id:
+            try:
+                remove_repo_webhook(gh.get_repo(db_repo.full_name), db_repo)
+            except GithubException as exc:
+                logger.warning("Could not clean up webhook for %s: %s", db_repo.full_name, exc)
         logger.info("Disabled AI reviews for %s", db_repo.full_name)
 
         return Response(

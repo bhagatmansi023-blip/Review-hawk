@@ -1,4 +1,4 @@
-﻿"""
+"""
 reviews/views.py
 ================
 GitHub webhook receiver for Review-hawk.
@@ -39,9 +39,6 @@ REVIEW_TRIGGER_ACTIONS = {"opened", "synchronize", "reopened"}
 
 def verify_signature(payload_body: bytes, secret_token: str, signature_header: str | None) -> bool:
     """Verify that the payload was sent from GitHub by validating SHA256."""
-    if not secret_token:
-        logger.warning("GITHUB_WEBHOOK_SECRET is not configured � accepting webhook without signature verification.")
-        return True
     if not signature_header:
         return False
 
@@ -66,7 +63,12 @@ def github_webhook(request):
     # ── Signature verification ─────────────────────────────────────────────
     signature_header = request.headers.get("X-Hub-Signature-256")
     if not verify_signature(request.body, GITHUB_WEBHOOK_SECRET, signature_header):
-        logger.warning("Webhook received with invalid signature — rejecting.")
+        if not GITHUB_WEBHOOK_SECRET:
+            logger.error("GITHUB_WEBHOOK_SECRET is empty in .env, so every webhook will be rejected.")
+        logger.warning(
+            "Webhook rejected (HTTP 403): signature missing or does not match GITHUB_WEBHOOK_SECRET. "
+            "The secret in .env must equal the secret in the GitHub App settings."
+        )
         return HttpResponseForbidden("Invalid signature!")
 
     # ── Parse payload ──────────────────────────────────────────────────────
@@ -89,12 +91,9 @@ def github_webhook(request):
     # ── Persist audit record ───────────────────────────────────────────────
     repo_data = payload.get("repository", {})
     github_repo_id = repo_data.get("id")
-    repo_full_name = repo_data.get("full_name", "")
     db_repo = None
     if github_repo_id:
         db_repo = Repository.objects.filter(github_repo_id=github_repo_id).first()
-    if not db_repo and repo_full_name:
-        db_repo = Repository.objects.filter(full_name=repo_full_name).first()
 
     webhook_event = None
     if delivery_id:
@@ -131,8 +130,12 @@ def _handle_pull_request(
     task for actionable events (opened / synchronize / reopened).
     """
     if db_repo is None:
-        logger.info(
-            "pull_request.%s received for an unregistered repo — ignoring.", action
+        logger.warning(
+            "pull_request.%s received for repo '%s' (id %s) which is NOT registered in the "
+            "dashboard — ignoring. Connect it on the Repositories page.",
+            action,
+            payload.get("repository", {}).get("full_name", "?"),
+            payload.get("repository", {}).get("id", "?"),
         )
         return
 
@@ -212,14 +215,12 @@ def _handle_pull_request(
         webhook_event.save(update_fields=["processed"])
 
     # ── Dispatch Celery task ───────────────────────────────────────────────
+    # If the broker (Redis) is down, record why on the review instead of crashing the
+    # webhook with a 500, so GitHub does not keep redelivering and the dashboard shows the reason.
     try:
-        from django.conf import settings
-        if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
-            from reviews.llm_reviewer import run_review
-            run_review(review.pk)
-        else:
-            run_llm_review.delay(review.pk)
-    except Exception as exc:
-        logger.warning("Celery dispatch error (%s); falling back to inline review execution.", exc)
-        from reviews.llm_reviewer import run_review
-        run_review(review.pk)
+        run_llm_review.delay(review.pk)
+    except Exception as exc:  # noqa: BLE001 - broker errors vary (redis, kombu, OSError)
+        logger.error("Could not queue review %d — is Redis running? %s: %s", review.pk, exc.__class__.__name__, exc)
+        review.status = Review.Status.FAILED
+        review.error_message = f"Could not queue the review. Is Redis running? ({exc.__class__.__name__}: {exc})"[:1000]
+        review.save(update_fields=["status", "error_message"])
