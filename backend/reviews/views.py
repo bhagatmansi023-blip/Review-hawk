@@ -103,6 +103,8 @@ def github_webhook(request):
             action=action,
             repository=db_repo,
             payload=payload,
+            error="",
+            outcome="",
         )
 
     # ── Route event ────────────────────────────────────────────────────────

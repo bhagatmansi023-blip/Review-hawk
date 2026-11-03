@@ -15,6 +15,10 @@ class WebhookEvent(models.Model):
     )
     payload = models.JSONField()
     processed = models.BooleanField(default=False)
+    error = models.TextField(blank=True, default="")
+    # error = models.TextField(blank=True, default="")exit()
+    outcome = models.CharField(max_length=200, blank=True, default="")
+    # outcome = models.CharField(max_length=200, blank=True, default="")
     received_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
