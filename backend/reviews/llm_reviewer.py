@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 GEMINI_API_KEY = config("GEMINI_API_KEY", default="")
-GEMINI_MODEL = config("GEMINI_MODEL", default="gemini-2.5-flash")
+GEMINI_MODEL = config("GEMINI_MODEL", default="gemini-3.8-flash")
 GITHUB_APP_ID = config("GITHUB_APP_ID", default="")
 GITHUB_PRIVATE_KEY_PATH = config("GITHUB_PRIVATE_KEY_PATH", default="")
 
@@ -328,11 +328,22 @@ def _build_user_prompt(
     base_branch: str,
     head_sha: str,
     diff: str,
+    ast_findings: Optional[list] = None,
 ) -> str:
-    """Compose the per-PR user message sent to Gemini."""
+    """Build the Gemini prompt, including deterministic Tree-sitter findings."""
     truncated = diff[:MAX_DIFF_CHARS]
     if len(diff) > MAX_DIFF_CHARS:
         truncated += "\n\n[... diff truncated for length ...]"
+
+    ast_findings = ast_findings or []
+    if ast_findings:
+        ast_context = "\n".join(
+            f"- {finding.file_path}:{finding.line_number} "
+            f"[{finding.rule_id}] ({finding.severity}) {finding.message}"
+            for finding in ast_findings
+        )
+    else:
+        ast_context = "No Tree-sitter findings were detected on changed Python lines."
 
     return f"""\
 ## Pull Request
@@ -347,13 +358,24 @@ def _build_user_prompt(
 
 ---
 
+## Tree-sitter Static Analysis Findings
+
+These findings were produced by deterministic AST rules. Treat them as additional
+context, verify them against the diff, and do not create duplicate comments for
+the same issue. Do not assume a finding is correct if the code does not support it.
+
+{ast_context}
+
+---
+
 ## Unified Diff
 
 ```diff
 {truncated}
 ```
 
-Review the diff above and return your JSON response now.
+Review the pull request diff using the static-analysis findings as additional
+context. Comment only on changed or added lines. Return the required JSON now.
 """
 
 
@@ -788,26 +810,8 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
         len(position_map), len(changed_lines_map),
     )
 
-    # ── 4. Call Gemini ─────────────────────────────────────────────────────
-    user_prompt = _build_user_prompt(
-        pr_title=pr.title,
-        pr_body=gh_pr.body or "",
-        author=pr.author,
-        base_branch=repo.default_branch,
-        head_sha=review.head_sha,
-        diff=raw_diff,
-    )
-    logger.info("Calling Gemini model=%s for review_id=%d …", GEMINI_MODEL, review.pk)
-    raw_text, input_tokens, output_tokens = _call_gemini(user_prompt)
-    logger.info("Gemini response: %d in, %d out tokens", input_tokens, output_tokens)
-
-    # ── 5. Parse LLM response ───────────────────────────────────────────────
-    result = _parse_llm_response(raw_text)
-    result.raw_response = raw_text
-    result.input_tokens = input_tokens
-    result.output_tokens = output_tokens
-
-    # ── 6. Tree-sitter static analysis ─────────────────────────────────────
+    # ── 4. Run Tree-sitter before Gemini ────────────────────────────────────
+    # This allows Gemini to use deterministic AST findings as extra context.
     static_findings: list = []
     if TREE_SITTER_AVAILABLE:
         python_files = [fp for fp in changed_lines_map if fp.endswith(".py")]
@@ -816,10 +820,42 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
             try:
                 content_obj = gh_repo.get_contents(file_path, ref=review.head_sha)
                 source = content_obj.decoded_content.decode("utf-8", errors="replace")
-                findings = analyze_python(source, file_path, changed_lines_map.get(file_path, set()))
+                findings = analyze_python(
+                    source,
+                    file_path,
+                    changed_lines_map.get(file_path, set()),
+                )
                 static_findings.extend(findings)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("tree-sitter failed for %s: %s", file_path, exc)
+    else:
+        logger.warning("Tree-sitter is unavailable; continuing with Gemini-only review.")
+
+    logger.info(
+        "Tree-sitter completed for review_id=%d: %d finding(s)",
+        review.pk,
+        len(static_findings),
+    )
+
+    # ── 5. Build prompt with AST findings and call Gemini ────────────────────
+    user_prompt = _build_user_prompt(
+        pr_title=pr.title,
+        pr_body=gh_pr.body or "",
+        author=pr.author,
+        base_branch=repo.default_branch,
+        head_sha=review.head_sha,
+        diff=raw_diff,
+        ast_findings=static_findings,
+    )
+    logger.info("Calling Gemini model=%s for review_id=%d …", GEMINI_MODEL, review.pk)
+    raw_text, input_tokens, output_tokens = _call_gemini(user_prompt)
+    logger.info("Gemini response: %d in, %d out tokens", input_tokens, output_tokens)
+
+    # ── 6. Parse LLM response ───────────────────────────────────────────────
+    result = _parse_llm_response(raw_text)
+    result.raw_response = raw_text
+    result.input_tokens = input_tokens
+    result.output_tokens = output_tokens
 
     # ── 7. Merge & dedupe ──────────────────────────────────────────────────
     final_llm, final_static = merge_and_dedupe(result.comments, static_findings)

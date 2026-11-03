@@ -51,6 +51,7 @@ class Review(models.Model):
     health_report = models.JSONField(default=dict, blank=True)              # signals, badges, tips
 
     github_review_id = models.BigIntegerField(null=True, blank=True)  # set once posted
+    github_post_error = models.TextField(blank=True, default="")     # error when posting to GitHub
     installation_id = models.BigIntegerField(null=True, blank=True)   # GitHub App installation
     posted_at = models.DateTimeField(null=True, blank=True)           # when review was posted
     created_at = models.DateTimeField(auto_now_add=True)

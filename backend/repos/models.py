@@ -50,6 +50,25 @@ class PullRequest(models.Model):
     state = models.CharField(max_length=10, choices=State.choices, default=State.OPEN)
     html_url = models.URLField(blank=True)
     latest_head_sha = models.CharField(max_length=40)  # updated on every push
+
+    # Extended metadata (populated from GitHub API on registration/sync)
+    github_pr_id = models.BigIntegerField(null=True, blank=True)
+    body = models.TextField(blank=True, default="")
+    source_branch = models.CharField(max_length=200, blank=True, default="")
+    target_branch = models.CharField(max_length=200, blank=True, default="")
+    is_draft = models.BooleanField(default=False)
+    additions = models.IntegerField(null=True, blank=True)
+    deletions = models.IntegerField(null=True, blank=True)
+    changed_files_count = models.IntegerField(null=True, blank=True)
+    changed_files = models.JSONField(default=list, blank=True)
+    commits_count = models.IntegerField(null=True, blank=True)
+    github_created_at = models.DateTimeField(null=True, blank=True)
+    github_updated_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    merged_at = models.DateTimeField(null=True, blank=True)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    sync_error = models.TextField(blank=True, default="")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -61,4 +80,3 @@ class PullRequest(models.Model):
 
     def __str__(self):
         return f"{self.repository} #{self.number}"
-
