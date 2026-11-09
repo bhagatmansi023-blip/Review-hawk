@@ -3349,3 +3349,30 @@ button {
   .top-rule-row { grid-template-columns: 100px 1fr 28px; }
   .analytics-controls { justify-content: flex-start; }
 }
+
+/* ---- sync panel and pull request table (dashboard) ---- */
+.sync-panel { padding: 16px 18px; border-radius: var(--radius-md); border: 1px solid; display: flex; flex-direction: column; gap: 12px; }
+.sync-panel-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text-primary); }
+.sync-progress { margin-left: auto; font-size: 0.8rem; color: var(--text-secondary); }
+.sync-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin: 0; }
+.sync-counts div { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 10px 12px; }
+.sync-counts dt { font-size: 0.74rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.sync-counts dd { margin: 2px 0 0; font-size: 1.4rem; font-weight: 800; color: var(--text-primary); }
+.sync-warnings { margin: 0; padding-left: 18px; font-size: 0.84rem; color: #f59e0b; }
+.sync-repos { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem; }
+.sync-repos li { display: flex; align-items: baseline; gap: 8px; color: var(--text-secondary); }
+.sync-repos svg { align-self: center; flex-shrink: 0; }
+.sync-repo-name { font-weight: 600; color: var(--text-primary); }
+.sync-repo-detail { color: var(--text-secondary); overflow-wrap: anywhere; }
+.sync-repo-bad .sync-repo-detail, .sync-repo-bad svg { color: #ef4444; }
+.pr-review-cell { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pr-review-error { color: #ef4444; }
+
+/* ---- status notices (sync results, review actions, analysis warnings) ---- */
+.action-notice { padding: 12px 16px; border-radius: var(--radius-md); font-size: 0.88rem; line-height: 1.5; border: 1px solid; margin: 0 0 16px; }
+.action-success { background: rgba(34, 197, 94, 0.1); border-color: rgba(34, 197, 94, 0.3); color: #22c55e; }
+.action-warning { background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.35); color: #f59e0b; }
+.action-error { background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3); color: #ef4444; }
+.action-info { background: var(--accent-badge-bg); border-color: var(--accent-badge-border); color: var(--text-secondary); }
+.action-info strong { color: var(--text-primary); }
+.sync-panel { margin: 0; }

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { FileCode2, SearchX } from 'lucide-react';
 import { SeverityBadge, SourceBadge } from './Badges';
-import { SEVERITY_META, SEVERITY_ORDER, countBySource, filterFindings, groupByFile } from '../../utils/analytics';
+import { SEVERITY_META, SEVERITY_ORDER, countBySource, filterFindings, groupByFile, groupBySeverity } from '../../utils/analytics';
 
 const SOURCE_TABS = [
   { key: 'all', label: 'All' },
@@ -16,10 +16,13 @@ const SOURCE_TABS = [
 export default function FindingsPanel({ comments = [] }) {
   const [source, setSource] = useState('all');
   const [severity, setSeverity] = useState('all');
+  const [groupMode, setGroupMode] = useState('file'); // 'file' | 'severity'
 
   const counts = useMemo(() => ({ ...countBySource(comments), all: comments.length }), [comments]);
-  const groups = useMemo(() => groupByFile(filterFindings(comments, { source, severity })), [comments, source, severity]);
-  const visible = groups.reduce((n, g) => n + g.items.length, 0);
+  const filtered = useMemo(() => filterFindings(comments, { source, severity }), [comments, source, severity]);
+  const groups = useMemo(() => groupByFile(filtered), [filtered]);
+  const severityGroups = useMemo(() => groupBySeverity(filtered), [filtered]);
+  const visible = filtered.length;
 
   return (
     <section className="findings-panel" aria-label="Review findings">
@@ -41,6 +44,20 @@ export default function FindingsPanel({ comments = [] }) {
                 onClick={() => setSource(tab.key)}
               >
                 {tab.label} <span className="tab-count">{counts[tab.key] ?? 0}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="tab-group" role="group" aria-label="Group findings by">
+            {[['file', 'By file'], ['severity', 'By severity']].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={groupMode === key}
+                className={`tab-btn ${groupMode === key ? 'active' : ''}`}
+                onClick={() => setGroupMode(key)}
+              >
+                {label}
               </button>
             ))}
           </div>
@@ -71,6 +88,20 @@ export default function FindingsPanel({ comments = [] }) {
           <SearchX size={28} />
           <p>No findings match these filters.</p>
         </div>
+      ) : groupMode === 'severity' ? (
+        severityGroups.map(({ severity: sev, items }) => (
+          <div className="findings-file" key={sev} data-testid={`severity-group-${sev}`}>
+            <div className="findings-file-name">
+              <SeverityBadge severity={sev} />
+              <span className="tab-count">{items.length}</span>
+            </div>
+            <ul className="findings-list">
+              {items.map((c) => (
+                <FindingRow key={c.id} c={c} showFile />
+              ))}
+            </ul>
+          </div>
+        ))
       ) : (
         groups.map(({ file, items }) => (
           <div className="findings-file" key={file}>
@@ -81,25 +112,32 @@ export default function FindingsPanel({ comments = [] }) {
             </div>
             <ul className="findings-list">
               {items.map((c) => (
-                <li key={c.id} className={`finding finding-${c.severity}`} data-testid="finding">
-                  <div className="finding-meta">
-                    <span className="finding-line">Line {c.line_number}</span>
-                    <SeverityBadge severity={c.severity} />
-                    <SourceBadge source={c.source} ruleLabel={c.rule_label} />
-                    {c.category && <span className="finding-category">{c.category}</span>}
-                  </div>
-                  <p className="finding-message">{c.message}</p>
-                  {c.suggestion && (
-                    <p className="finding-suggestion">
-                      <strong>Suggestion:</strong> {c.suggestion}
-                    </p>
-                  )}
-                </li>
+                <FindingRow key={c.id} c={c} />
               ))}
             </ul>
           </div>
         ))
       )}
     </section>
+  );
+}
+
+/** One finding: location, severity, detector, explanation and suggested fix. */
+function FindingRow({ c, showFile = false }) {
+  return (
+    <li className={`finding finding-${c.severity}`} data-testid="finding">
+      <div className="finding-meta">
+        <span className="finding-line">{showFile ? `${c.file_path}:${c.line_number}` : `Line ${c.line_number}`}</span>
+        <SeverityBadge severity={c.severity} />
+        <SourceBadge source={c.source} ruleLabel={c.rule_label} />
+        {c.category && <span className="finding-category">{c.category}</span>}
+      </div>
+      <p className="finding-message">{c.message}</p>
+      {c.suggestion && (
+        <p className="finding-suggestion">
+          <strong>Suggestion:</strong> {c.suggestion}
+        </p>
+      )}
+    </li>
   );
 }

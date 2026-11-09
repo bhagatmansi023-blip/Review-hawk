@@ -15,6 +15,13 @@ class Repository(models.Model):
     is_private = models.BooleanField(default=False)
     webhook_id = models.BigIntegerField(null=True, blank=True)  # set once webhook is registered
     is_enabled = models.BooleanField(default=False)  # bot only reviews when True
+    installation_id = models.BigIntegerField(null=True, blank=True)  # GitHub App installation covering this repo
+    # Result of the most recent pull request synchronisation
+    last_sync_status = models.CharField(max_length=10, blank=True, default="")  # "" | syncing | ok | error
+    last_sync_error = models.TextField(blank=True, default="")
+    last_sync_count = models.IntegerField(default=0)  # open PRs fetched by the last sync
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    sync_started_at = models.DateTimeField(null=True, blank=True)  # used as a lock while syncing
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -53,6 +60,7 @@ class PullRequest(models.Model):
 
     # Extended metadata (populated from GitHub API on registration/sync)
     github_pr_id = models.BigIntegerField(null=True, blank=True)
+    installation_id = models.BigIntegerField(null=True, blank=True)
     body = models.TextField(blank=True, default="")
     source_branch = models.CharField(max_length=200, blank=True, default="")
     target_branch = models.CharField(max_length=200, blank=True, default="")

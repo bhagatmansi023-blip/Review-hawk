@@ -73,11 +73,12 @@ def test_repo_pulls_list_shape_and_latest_review(world):
     pr = make_pr(world.repo, 7, title="Fix login")
     make_review(pr, sha="a", days_ago=2, score=60, grade="C")
     make_review(pr, sha="b", days_ago=0, score=92, grade="A+", findings=MIXED)
+    PullRequest.objects.filter(pk=pr.pk).update(latest_head_sha="b" * 40)  # the PR moved on to commit b
     body = world.client.get(f"/api/repos/{world.repo.id}/pulls/").json()
     assert body["count"] == 1
     row = body["results"][0]
     assert row["number"] == 7 and row["review_status"] == "completed" and row["review_count"] == 2
-    assert row["latest_review"]["health_grade"] == "A+"            # newest review wins
+    assert row["latest_review"]["health_grade"] == "A+"            # review of the PR's current commit
     assert row["latest_review"]["counts"] == {"error": 1, "warning": 1, "info": 1, "total": 3, "llm": 1, "static": 2}
     assert row["target_branch"] == "main"
 
@@ -182,3 +183,12 @@ def test_stats_range_and_repo_filters(world):
     assert c.get(f"/api/stats/?days=90&repo={other_mine.id}").json()["totals"]["reviews"] == 1
     assert len(c.get("/api/stats/?days=9999").json()["issues_over_time"]) == 365  # clamped
     assert len(c.get("/api/stats/?days=abc").json()["issues_over_time"]) == 30    # bad input -> default
+
+
+def test_latest_review_is_the_one_for_the_current_head_commit(world):
+    """A late re-run of an OLD commit must not hide the review of the commit the PR is at now."""
+    pr = make_pr(world.repo, 8)                                   # head commit is "a" * 40
+    make_review(pr, sha="a", days_ago=3, score=88, grade="A")
+    make_review(pr, sha="b", days_ago=0, score=40, grade="D")     # newer, but for an older/other commit
+    row = world.client.get(f"/api/repos/{world.repo.id}/pulls/").json()["results"][0]
+    assert row["latest_review"]["health_grade"] == "A"

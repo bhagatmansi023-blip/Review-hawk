@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   countBySource, filterFindings, formatDay, formatDuration, formatNumber, gradeColor,
-  groupByFile, hasData, timeAgo, titleCase,
+  groupByFile, groupBySeverity, hasData, timeAgo, titleCase,
 } from './analytics';
 
 const F = (id, file, line, severity, source) => ({ id, file_path: file, line_number: line, severity, source });
@@ -72,5 +72,13 @@ describe('findings helpers', () => {
   it('counts findings per detector', () => {
     expect(countBySource(items)).toEqual({ llm: 2, static: 2 });
     expect(countBySource([])).toEqual({ llm: 0, static: 0 });
+  });
+
+  it('groups by severity with errors first, skipping empty groups, sorted by file then line', () => {
+    const groups = groupBySeverity(items);
+    expect(groups.map((g) => g.severity)).toEqual(['error', 'warning', 'info']);
+    expect(groups[2].items.map((f) => f.id)).toEqual([4, 1]);                 // a.py:1 before b.py:9
+    expect(groupBySeverity(items.filter((f) => f.severity !== 'warning')).map((g) => g.severity)).toEqual(['error', 'info']);
+    expect(groupBySeverity([])).toEqual([]);
   });
 });

@@ -1,14 +1,22 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, CheckCircle2, ArrowRight, GitPullRequest, FolderGit2, GitBranch } from 'lucide-react';
+import { Plus, CheckCircle2, ArrowRight, ChevronLeft, ChevronRight, GitPullRequest, FolderGit2, GitBranch, RefreshCw } from 'lucide-react';
 import { useRepos } from '../context/useRepos';
 import useStats from '../hooks/useStats';
+import syncService from '../services/syncService';
 import StatCards from '../components/analytics/StatCards';
 import IssuesOverTimeChart from '../components/analytics/IssuesOverTimeChart';
 import SeverityDonut from '../components/analytics/SeverityDonut';
 import DetectorSplit from '../components/analytics/DetectorSplit';
 import HealthDistribution from '../components/analytics/HealthDistribution';
 import ReviewsTable from '../components/reviews/ReviewsTable';
+import PullRequestsTable from '../components/dashboard/PullRequestsTable';
+import SyncPanel from '../components/dashboard/SyncPanel';
 import ErrorNotice from '../components/common/ErrorNotice';
+
+const PAGE_SIZE = 10;
+const POLL_MS = 5000;
+const MAX_POLLS = 120; // stop checking after ~10 minutes
 
 export default function Dashboard() {
   const { connectedRepos } = useRepos();
@@ -16,7 +24,95 @@ export default function Dashboard() {
   const primaryRepo = hasConnectedRepo ? connectedRepos[0] : null;
   const { data, isLoading, error, reload } = useStats({ days: 30 });
 
+  // ── pull requests (real rows from the database) ─────────────────────────
+  const [prState, setPrState] = useState('open'); // 'open' | 'all'
+  const [prPage, setPrPage] = useState(1);
+  const [prData, setPrData] = useState({ count: 0, next: null, results: [] });
+  const [prLoading, setPrLoading] = useState(true);
+  const [prError, setPrError] = useState(null);
+  const [prTick, setPrTick] = useState(0);
+  const polls = useRef(0);
+
+  useEffect(() => {
+    let active = true;
+    Promise.resolve().then(async () => {
+      if (!active) return;
+      setPrLoading(true);
+      setPrError(null);
+      try {
+        const res = await syncService.listPullRequests({ page: prPage, state: prState === 'all' ? undefined : 'open' });
+        if (active) setPrData(res);
+        polls.current = 0;
+      } catch (err) {
+        if (active) setPrError(err);
+      } finally {
+        if (active) setPrLoading(false);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [prPage, prState, prTick]);
+
+  // While any review is pending or processing, quietly refresh until it finishes.
+  const inProgress = prData.results.some((p) => p.review_status === 'pending' || p.review_status === 'running');
+  useEffect(() => {
+    if (!inProgress || polls.current >= MAX_POLLS) return undefined;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      polls.current += 1;
+      try {
+        const res = await syncService.listPullRequests({ page: prPage, state: prState === 'all' ? undefined : 'open' });
+        if (!cancelled) {
+          setPrData(res);
+          reload();
+        }
+      } catch {
+        /* keep the last good data; a manual refresh will surface the error */
+      }
+    }, POLL_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [inProgress, prData, prPage, prState, reload]);
+
+  // ── synchronisation ─────────────────────────────────────────────────────
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [syncError, setSyncError] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    syncService
+      .getStatus({ celery: true })
+      .then((s) => active && setSyncStatus(s))
+      .catch(() => {}); // non-essential: the panel just stays hidden
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSync = useCallback(async () => {
+    if (isSyncing) return; // a double click must not start a second sync
+    setIsSyncing(true);
+    setSyncError(null);
+    try {
+      setSyncResult(await syncService.syncAll({ review: true }));
+    } catch (err) {
+      setSyncResult(null);
+      setSyncError(err.status === 409 ? new Error('A sync is already running. Please wait a moment and try again.') : err);
+    } finally {
+      setIsSyncing(false);
+      setPrPage(1);
+      setPrTick((t) => t + 1);
+      reload();
+    }
+  }, [isSyncing, reload]);
+
   const recent = data?.recent_reviews || [];
+  const totalPages = Math.max(1, Math.ceil((prData.count || 0) / PAGE_SIZE));
 
   return (
     <div className="placeholder-page analytics-page">
@@ -24,13 +120,26 @@ export default function Dashboard() {
         <div>
           <h1 className="placeholder-title">Dashboard</h1>
           <p className="placeholder-desc">
-            Live review activity, findings and PR health across your connected repositories (last 30 days).
+            Live pull requests, AI review results, findings and PR health across your connected repositories.
           </p>
         </div>
-        <Link to="/repositories" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
-          <Plus size={16} />
-          <span>Connect Repository</span>
-        </Link>
+        <div className="analytics-controls">
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+            onClick={handleSync}
+            disabled={isSyncing || !hasConnectedRepo}
+            title="Fetch open pull requests from GitHub for every connected repository and queue reviews"
+          >
+            <RefreshCw size={16} className={isSyncing ? 'spin-icon' : ''} />
+            <span>{isSyncing ? 'Syncing…' : 'Sync Pull Requests'}</span>
+          </button>
+          <Link to="/repositories" className="btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+            <Plus size={16} />
+            <span>Connect Repository</span>
+          </Link>
+        </div>
       </div>
 
       {hasConnectedRepo ? (
@@ -55,7 +164,7 @@ export default function Dashboard() {
             <div className="active-repo-title-row">
               <FolderGit2 size={24} className="active-repo-icon" />
               <div>
-                <h3 className="active-repo-name">{primaryRepo.full_name || `${typeof primaryRepo.owner === 'object' ? primaryRepo.owner?.login : primaryRepo.owner}/${primaryRepo.name}`}</h3>
+                <h3 className="active-repo-name">{primaryRepo.full_name || `${primaryRepo.owner}/${primaryRepo.name}`}</h3>
                 <div className="active-repo-meta">
                   <span className="meta-item">
                     <GitBranch size={13} />
@@ -64,7 +173,7 @@ export default function Dashboard() {
                   <span className="meta-separator">•</span>
                   <span className="meta-item">{primaryRepo.is_private ? 'Private repository' : 'Public repository'}</span>
                   <span className="meta-separator">•</span>
-                  <span className="meta-item text-success">CodeHawk review bot active</span>
+                  <span className="meta-item">{connectedRepos.length} connected</span>
                 </div>
               </div>
             </div>
@@ -87,6 +196,67 @@ export default function Dashboard() {
           </Link>
         </div>
       )}
+
+      <SyncPanel result={syncResult} status={syncStatus} isSyncing={isSyncing} error={syncError} />
+
+      <section className="chart-card" aria-label="Pull requests">
+        <header className="chart-card-header">
+          <div>
+            <h3 className="chart-card-title">Pull requests</h3>
+            <p className="chart-card-subtitle">
+              {prData.count} {prState === 'open' ? 'open' : 'total'} across your connected repositories
+              {inProgress ? ' · reviews running, updating automatically' : ''}
+            </p>
+          </div>
+          <div className="tab-group" role="group" aria-label="Pull request state">
+            {[['open', 'Open'], ['all', 'All']].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={prState === key}
+                className={`tab-btn ${prState === key ? 'active' : ''}`}
+                onClick={() => {
+                  setPrState(key);
+                  setPrPage(1);
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </header>
+
+        <ErrorNotice error={prError} onRetry={() => setPrTick((t) => t + 1)} title="Could not load pull requests" />
+
+        {prLoading && prData.results.length === 0 ? (
+          <div className="chart-skeleton" style={{ height: 160 }} role="status" aria-label="Loading pull requests" />
+        ) : !prError && prData.results.length === 0 ? (
+          <div className="chart-empty" style={{ height: 160 }}>
+            <GitPullRequest size={28} />
+            <p>
+              No pull requests stored yet. {hasConnectedRepo ? 'Click Sync Pull Requests to fetch the open ones from GitHub.' : 'Connect a repository first.'}
+            </p>
+          </div>
+        ) : (
+          <PullRequestsTable pullRequests={prData.results} />
+        )}
+
+        {prData.count > PAGE_SIZE && (
+          <footer className="pagination-bar">
+            <span>
+              Page {prPage} of {totalPages}
+            </span>
+            <div>
+              <button type="button" className="btn-secondary-sm" disabled={prPage <= 1} onClick={() => setPrPage((p) => p - 1)}>
+                <ChevronLeft size={14} /> Previous
+              </button>
+              <button type="button" className="btn-secondary-sm" disabled={!prData.next} onClick={() => setPrPage((p) => p + 1)}>
+                Next <ChevronRight size={14} />
+              </button>
+            </div>
+          </footer>
+        )}
+      </section>
 
       <ErrorNotice error={error} onRetry={reload} title="Could not load dashboard statistics" />
 
@@ -114,7 +284,7 @@ export default function Dashboard() {
         ) : recent.length === 0 ? (
           <div className="chart-empty" style={{ height: 160 }}>
             <GitPullRequest size={28} />
-            <p>No reviews yet. Open a pull request on a connected repository to see one here.</p>
+            <p>No reviews yet. Sync pull requests or open one on a connected repository to see one here.</p>
           </div>
         ) : (
           <ReviewsTable reviews={recent} compact />

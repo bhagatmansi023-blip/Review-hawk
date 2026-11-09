@@ -99,3 +99,13 @@ export function countBySource(comments = []) {
     { llm: 0, static: 0 },
   );
 }
+
+/** Group findings by severity (errors first), each group sorted by file then line. */
+export function groupBySeverity(comments = []) {
+  return SEVERITY_ORDER.map((severity) => ({
+    severity,
+    items: comments
+      .filter((c) => c.severity === severity)
+      .sort((a, b) => a.file_path.localeCompare(b.file_path) || a.line_number - b.line_number),
+  })).filter((group) => group.items.length > 0);
+}

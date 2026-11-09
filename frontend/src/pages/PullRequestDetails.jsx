@@ -458,8 +458,25 @@ export default function PullRequestDetails() {
         )}
       </section>
 
+      {review?.github_post_error && (
+        <div className="action-notice action-warning" role="status">
+          <strong>Analysis saved, but the review could not be posted to GitHub.</strong> {review.github_post_error}
+        </div>
+      )}
+      {review?.analysis_warnings?.length > 0 && (
+        <div className="action-notice action-warning" role="status">
+          <strong>Analysis warnings</strong>
+          <ul style={{ margin: '6px 0 0', paddingLeft: '18px' }}>
+            {review.analysis_warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* PR health score + findings from AI review and Tree-sitter (side by side) */}
-      {review && Array.isArray(review.comments) && (
+      {/* Findings and score only exist for a completed analysis; a failed one shows its error above instead. */}
+      {review && reviewStatus === 'completed' && Array.isArray(review.comments) && (
         <>
           <HealthCard health={review.health} score={review.health_score} grade={review.health_grade} />
           <FindingsPanel comments={review.comments} />

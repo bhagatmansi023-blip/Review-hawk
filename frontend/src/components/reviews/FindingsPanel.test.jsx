@@ -58,4 +58,23 @@ describe('FindingsPanel', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Tree-sitter/ }));
     expect(screen.getByText(/No findings match these filters/)).toBeInTheDocument();
   });
+
+  it('can group findings by severity (errors first) instead of by file', () => {
+    render(<FindingsPanel comments={comments} />);
+    fireEvent.click(screen.getByRole('button', { name: 'By severity' }));
+    const groups = ['error', 'warning', 'info'].map((s) => screen.getByTestId(`severity-group-${s}`));
+    expect(groups.map((g) => within(g).getAllByTestId('finding').length)).toEqual([1, 1, 1]);
+    expect(within(groups[0]).getByText('app.py:3')).toBeInTheDocument();      // each row names its file
+    expect(screen.queryByText('util.py', { selector: 'code' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'By file' }));
+    expect(screen.getByText('util.py', { selector: 'code' })).toBeInTheDocument();
+  });
+
+  it('keeps the filters when grouping by severity', () => {
+    render(<FindingsPanel comments={comments} />);
+    fireEvent.click(screen.getByRole('button', { name: 'By severity' }));
+    fireEvent.click(screen.getByRole('tab', { name: /Tree-sitter/ }));
+    expect(screen.getAllByTestId('finding')).toHaveLength(2);
+    expect(screen.queryByTestId('severity-group-warning')).not.toBeInTheDocument();
+  });
 });

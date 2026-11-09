@@ -391,6 +391,8 @@ def _call_gemini(user_prompt: str) -> tuple[str, int, int]:
     """
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
+    if genai is None:
+        raise RuntimeError("The google-generativeai package is not installed (pip install google-generativeai).")
 
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel(
@@ -536,7 +538,9 @@ def _get_github_client(review: Review) -> Github:
             )
             token = integration.get_access_token(install.id).token
             logger.info("Using GitHub App auth (installation_id=%d)", installation_id)
-            return Github(token)
+            client = Github(token)
+            client._rh_token = token  # reused to download the diff from the API
+            return client
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "GitHub App auth failed (installation_id=%s): %s — falling back to user token.",
@@ -565,7 +569,9 @@ def _get_github_client(review: Review) -> Github:
         "GITHUB_PRIVATE_KEY_PATH to post as the App instead.",
         review.pk,
     )
-    return Github(token_obj.token)
+    client = Github(token_obj.token)
+    client._rh_token = token_obj.token
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -585,7 +591,11 @@ def _is_transient(exc: BaseException) -> bool:
         return True
     if isinstance(exc, GithubException):
         status = getattr(exc, "status", 0)
-        # 403 can mean rate-limited; 500/502/503 are GitHub server errors
+        data = getattr(exc, "data", None)
+        message = str(data.get("message", "") if isinstance(data, dict) else data or "").lower()
+        if status == 403 and "not accessible by integration" in message:
+            return False  # missing GitHub App permission: retrying cannot fix it
+        # 403 can mean rate-limited; 429/500/502/503 are throttling or GitHub server errors
         if status in {403, 429, 500, 502, 503}:
             return True
     if isinstance(exc, Exception):
@@ -596,6 +606,37 @@ def _is_transient(exc: BaseException) -> bool:
             if any(k in msg for k in ("429", "quota", "rate", "unavailable", "internal")):
                 return True
     return False
+
+
+def _diff_from_files(gh_pr) -> str:
+    """Rebuild a unified diff from the PR's file list (used when the diff endpoint refuses)."""
+    parts = []
+    for f in gh_pr.get_files():
+        patch = getattr(f, "patch", None)
+        if patch:
+            parts.append(f"diff --git a/{f.filename} b/{f.filename}\n--- a/{f.filename}\n+++ b/{f.filename}\n{patch}\n")
+    if not parts:
+        raise RuntimeError("GitHub returned no textual diff for this pull request (binary or empty changes).")
+    return "".join(parts)
+
+
+def _fetch_diff(gh: Github, gh_pr, repo: Repository, pr: PullRequest) -> str:
+    """
+    Download the PR diff through the GitHub API *with credentials*, so private repositories work.
+    (The public github.com/.../pull/N.diff URL returns 404 for private repos.)
+    """
+    headers = {"Accept": "application/vnd.github.v3.diff"}
+    token = getattr(gh, "_rh_token", None)
+    if isinstance(token, str) and token:
+        headers["Authorization"] = f"Bearer {token}"
+    resp = http_requests.get(
+        f"https://api.github.com/repos/{repo.full_name}/pulls/{pr.number}", headers=headers, timeout=30,
+    )
+    if resp.status_code in {404, 406, 422}:
+        logger.warning("Diff endpoint returned %s for %s #%d; rebuilding from the file list.", resp.status_code, repo.full_name, pr.number)
+        return _diff_from_files(gh_pr)
+    resp.raise_for_status()
+    return resp.text
 
 
 def _post_github_review(
@@ -761,7 +802,8 @@ def run_review(review_id: int) -> None:
     # Mark as running
     review.status = Review.Status.RUNNING
     review.started_at = datetime.now(tz=timezone.utc)
-    review.save(update_fields=["status", "started_at"])
+    review.error_message = ""
+    review.save(update_fields=["status", "started_at", "error_message"])
 
     try:
         _do_review(review, pr, repo)
@@ -773,7 +815,7 @@ def run_review(review_id: int) -> None:
         # Permanent failure — record it and don't retry
         logger.exception("Permanent failure in review %d: %s", review_id, exc)
         review.status = Review.Status.FAILED
-        review.error_message = str(exc)
+        review.error_message = f"{exc.__class__.__name__}: {exc}"[:2000]
         review.finished_at = datetime.now(tz=timezone.utc)
         review.save(update_fields=["status", "error_message", "finished_at"])
 
@@ -794,13 +836,7 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     gh_pr = gh_repo.get_pull(pr.number)
 
     # ── 2. Fetch PR diff ───────────────────────────────────────────────────
-    diff_resp = http_requests.get(
-        gh_pr.diff_url,
-        headers={"Accept": "application/vnd.github.v3.diff"},
-        timeout=30,
-    )
-    diff_resp.raise_for_status()
-    raw_diff = diff_resp.text
+    raw_diff = _fetch_diff(gh, gh_pr, repo, pr)
 
     # ── 3. Build diff-position map + extract changed lines per file ────────
     position_map = build_diff_position_map(raw_diff)
@@ -813,6 +849,7 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     # ── 4. Run Tree-sitter before Gemini ────────────────────────────────────
     # This allows Gemini to use deterministic AST findings as extra context.
     static_findings: list = []
+    warnings: list[str] = []  # non-fatal analysis problems, shown in the dashboard
     if TREE_SITTER_AVAILABLE:
         python_files = [fp for fp in changed_lines_map if fp.endswith(".py")]
         logger.info("Running tree-sitter on %d Python file(s)", len(python_files))
@@ -828,8 +865,10 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
                 static_findings.extend(findings)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("tree-sitter failed for %s: %s", file_path, exc)
+                warnings.append(f"Tree-sitter could not analyse {file_path}: {exc.__class__.__name__}: {exc}")
     else:
         logger.warning("Tree-sitter is unavailable; continuing with Gemini-only review.")
+        warnings.append("Tree-sitter is not available on the server, so static checks were skipped (AI review only).")
 
     logger.info(
         "Tree-sitter completed for review_id=%d: %d finding(s)",
@@ -884,7 +923,8 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     review.input_tokens = input_tokens
     review.output_tokens = output_tokens
     review.files_reviewed = len(all_files)
-    update_fields = ["summary", "llm_model", "input_tokens", "output_tokens", "files_reviewed"]
+    review.analysis_warnings = warnings
+    update_fields = ["summary", "llm_model", "input_tokens", "output_tokens", "files_reviewed", "analysis_warnings"]
     if health is not None:
         review.health_score = health.score
         review.health_grade = health.grade
@@ -893,6 +933,7 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     review.save(update_fields=update_fields)
 
     # ── 9. Persist ReviewComment rows ───────────────────────────────────────
+    review.comments.all().delete()  # a retried review must not duplicate its findings
     db_comments: list[ReviewComment] = []
     for comment in result.comments:
         db_comments.append(ReviewComment(
@@ -921,20 +962,30 @@ def _do_review(review: Review, pr: PullRequest, repo: Repository) -> None:
     logger.info("Saved %d comments (%d LLM, %d static)", len(db_comments), len(result.comments), len(final_static))
 
     # ── 10. Post to GitHub ──────────────────────────────────────────────────
-    github_review_id = _post_github_review(
-        gh=gh,
-        review=review,
-        result=result,
-        static_findings=final_static,
-        position_map=position_map,
-        health_markdown=health_markdown,
-    )
+    github_review_id = None
+    post_error = ""
+    try:
+        github_review_id = _post_github_review(
+            gh=gh,
+            review=review,
+            result=result,
+            static_findings=final_static,
+            position_map=position_map,
+            health_markdown=health_markdown,
+        )
+    except GithubException as exc:
+        if _is_transient(exc):
+            raise
+        data = exc.data if isinstance(exc.data, dict) else {}
+        post_error = f"GitHub {getattr(exc, 'status', '?')}: {data.get('message') or exc}"
+        logger.error("Analysis saved, but posting to GitHub failed for review %d: %s", review.pk, post_error)
 
-    # ── 11. Mark posted + complete ──────────────────────────────────────────
+    # ── 11. Mark complete (the analysis itself succeeded) ───────────────────
     now = datetime.now(tz=timezone.utc)
     review.status = Review.Status.COMPLETED
     review.github_review_id = github_review_id
-    review.posted_at = now
+    review.github_post_error = post_error
+    review.posted_at = now if github_review_id else None
     review.finished_at = now
-    review.save(update_fields=["status", "github_review_id", "posted_at", "finished_at"])
-    logger.info("Review %d completed (github_review_id=%d).", review.pk, github_review_id)
+    review.save(update_fields=["status", "github_review_id", "github_post_error", "posted_at", "finished_at"])
+    logger.info("Review %d completed (github_review_id=%s).", review.pk, github_review_id)

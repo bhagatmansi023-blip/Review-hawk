@@ -35,7 +35,8 @@ export function GradeBadge({ grade, score = null }) {
 
 const STATUS = {
   completed: { label: 'Completed', icon: CheckCircle2, color: '#22c55e' },
-  running: { label: 'Running', icon: Loader2, color: '#38bdf8' },
+  running: { label: 'Processing', icon: Loader2, color: '#38bdf8' },
+  not_reviewed: { label: 'Not reviewed', icon: Clock, color: '#94a3b8' },
   pending: { label: 'Pending', icon: Clock, color: '#eab308' },
   failed: { label: 'Failed', icon: XCircle, color: '#ef4444' },
 };

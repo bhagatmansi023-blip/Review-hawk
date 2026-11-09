@@ -39,14 +39,29 @@ def run_llm_review(self, review_id: int) -> None:
     immediately, so even if Celery re-delivers the task the review is only
     posted once.
     """
+    from django.utils import timezone
+
     from reviews.llm_reviewer import run_review, _is_transient
+    from reviews.models import Review
+
+    def _set(status, message):
+        Review.objects.filter(pk=review_id).exclude(status=Review.Status.COMPLETED).update(
+            status=status, error_message=message[:2000],
+            finished_at=timezone.now() if status == Review.Status.FAILED else None,
+        )
 
     logger.info("Celery task started: run_llm_review(review_id=%d)", review_id)
     try:
         run_review(review_id)
     except Exception as exc:
         if _is_transient(exc):
+            if self.request.retries >= self.max_retries:
+                # Out of retries: record the real error instead of leaving the review "running" forever.
+                _set(Review.Status.FAILED, f"Gave up after {self.max_retries + 1} attempts. {exc.__class__.__name__}: {exc}")
+                logger.error("Review %d failed after %d attempts: %s", review_id, self.max_retries + 1, exc)
+                return
             delay = self.default_retry_delay * (2 ** self.request.retries)
+            _set(Review.Status.PENDING, f"Temporary error ({exc.__class__.__name__}: {exc}). Retrying in {delay}s.")
             logger.warning(
                 "Transient error in review %d (attempt %d/%d), retrying in %ds: %s",
                 review_id,

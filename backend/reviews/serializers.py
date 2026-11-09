@@ -94,6 +94,7 @@ class ReviewSummarySerializer(serializers.ModelSerializer):
             "llm_model", "input_tokens", "output_tokens", "total_tokens",
             "files_reviewed", "duration_seconds", "created_at", "finished_at",
             "health_score", "health_grade", "counts",
+            "error_message", "github_post_error", "analysis_warnings",
         ]
 
     def get_counts(self, obj) -> dict:
@@ -108,14 +109,17 @@ class ReviewDetailSerializer(ReviewSummarySerializer):
 
     class Meta(ReviewSummarySerializer.Meta):
         fields = ReviewSummarySerializer.Meta.fields + [
-            "error_message", "github_review_id", "posted_at", "health", "comments",
+            "github_review_id", "posted_at", "health", "comments",
         ]
 
 
 def _latest_review(pr: PullRequest):
     """Newest review of a PR, using the prefetched list when available."""
-    reviews = list(pr.reviews.all())
-    return reviews[0] if reviews else None  # prefetch is ordered newest-first
+    reviews = list(pr.reviews.all())  # prefetch is ordered newest-first
+    for review in reviews:
+        if review.head_sha == pr.latest_head_sha:
+            return review  # the review of the commit the PR is at right now
+    return reviews[0] if reviews else None
 
 
 class PullRequestSerializer(serializers.ModelSerializer):
@@ -124,7 +128,7 @@ class PullRequestSerializer(serializers.ModelSerializer):
     user = serializers.CharField(source="author", read_only=True)
     repository = serializers.IntegerField(source="repository_id", read_only=True)
     repository_name = serializers.CharField(source="repository.full_name", read_only=True)
-    target_branch = serializers.CharField(source="repository.default_branch", read_only=True)
+    target_branch = serializers.SerializerMethodField()
     source_branch = serializers.SerializerMethodField()
     review_status = serializers.SerializerMethodField()
     review_count = serializers.SerializerMethodField()
@@ -136,11 +140,15 @@ class PullRequestSerializer(serializers.ModelSerializer):
             "id", "number", "title", "author", "user", "state", "html_url",
             "latest_head_sha", "repository", "repository_name", "source_branch",
             "target_branch", "created_at", "updated_at", "review_status",
-            "review_count", "latest_review",
+            "review_count", "latest_review", "is_draft", "installation_id",
+            "last_synced_at", "sync_error", "github_updated_at",
         ]
 
     def get_source_branch(self, obj):
-        return None  # not stored by the webhook handler yet
+        return obj.source_branch or None
+
+    def get_target_branch(self, obj):
+        return obj.target_branch or obj.repository.default_branch
 
     def get_review_status(self, obj) -> str:
         r = _latest_review(obj)

@@ -16,9 +16,7 @@ class WebhookEvent(models.Model):
     payload = models.JSONField()
     processed = models.BooleanField(default=False)
     error = models.TextField(blank=True, default="")
-    # error = models.TextField(blank=True, default="")exit()
     outcome = models.CharField(max_length=200, blank=True, default="")
-    # outcome = models.CharField(max_length=200, blank=True, default="")
     received_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -56,6 +54,7 @@ class Review(models.Model):
 
     github_review_id = models.BigIntegerField(null=True, blank=True)  # set once posted
     github_post_error = models.TextField(blank=True, default="")     # error when posting to GitHub
+    analysis_warnings = models.JSONField(default=list, blank=True)   # non-fatal problems, e.g. Tree-sitter failures
     installation_id = models.BigIntegerField(null=True, blank=True)   # GitHub App installation
     posted_at = models.DateTimeField(null=True, blank=True)           # when review was posted
     created_at = models.DateTimeField(auto_now_add=True)

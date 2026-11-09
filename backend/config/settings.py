@@ -234,4 +234,7 @@ CELERY_WORKER_CONCURRENCY = env.int("CELERY_WORKER_CONCURRENCY", default=2)
 GEMINI_API_KEY = env("GEMINI_API_KEY", default="")
 GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-2.5-flash")
 
-CELERY_TASK_ALWAYS_EAGER = env.bool('CELERY_TASK_ALWAYS_EAGER', default=DEBUG)
+# Run tasks on the Celery worker by default. 'Eager' mode runs the whole Gemini review INSIDE the
+# web request (webhooks time out after 10s and a worker is never used). Set
+# CELERY_TASK_ALWAYS_EAGER=True in .env only if you deliberately want that.
+CELERY_TASK_ALWAYS_EAGER = env.bool('CELERY_TASK_ALWAYS_EAGER', default=False)
