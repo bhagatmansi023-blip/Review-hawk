@@ -8,15 +8,10 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.SeparateDatabaseAndState(
-            database_operations=[],
-            state_operations=[
-                migrations.AddField(
-                    model_name='repository',
-                    name='html_url',
-                    field=models.URLField(blank=True, default=''),
-                ),
-            ],
+        migrations.AddField(
+            model_name='repository',
+            name='html_url',
+            field=models.URLField(blank=True, default=''),
         ),
         migrations.AlterField(
             model_name='pullrequest',

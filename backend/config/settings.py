@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'repos',
     'reviews',
+    'rag',
     "django.contrib.sites",
     "corsheaders",
     "allauth",
@@ -238,3 +239,12 @@ GEMINI_MODEL = env("GEMINI_MODEL", default="gemini-2.5-flash")
 # web request (webhooks time out after 10s and a worker is never used). Set
 # CELERY_TASK_ALWAYS_EAGER=True in .env only if you deliberately want that.
 CELERY_TASK_ALWAYS_EAGER = env.bool('CELERY_TASK_ALWAYS_EAGER', default=False)
+
+# ---------------------------------------------------------------------------
+# RAG (Repository-Aware Generation)
+# ---------------------------------------------------------------------------
+RAG_ENABLED = env.bool("RAG_ENABLED", default=True)
+RAG_MAX_CHUNKS_PER_PR = env.int("RAG_MAX_CHUNKS_PER_PR", default=10)
+RAG_SIMILARITY_THRESHOLD = env.float("RAG_SIMILARITY_THRESHOLD", default=0.6)
+RAG_MAX_CONTEXT_CHARS = env.int("RAG_MAX_CONTEXT_CHARS", default=20000)
+GEMINI_EMBEDDING_MODEL = env("GEMINI_EMBEDDING_MODEL", default="text-embedding-004")

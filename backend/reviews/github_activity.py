@@ -802,8 +802,12 @@ def get_github_client_for_repo(repository: Any) -> Github:
         try:
             with open(private_key_path, "r", encoding="utf-8") as fh:
                 private_key = fh.read()
+            try:
+                parsed_app_id = int(str(app_id).strip())
+            except ValueError:
+                parsed_app_id = str(app_id).strip()
             integration = GithubIntegration(
-                integration_id=str(app_id).strip(),
+                integration_id=parsed_app_id,
                 private_key=private_key,
             )
             install = integration.get_installation(

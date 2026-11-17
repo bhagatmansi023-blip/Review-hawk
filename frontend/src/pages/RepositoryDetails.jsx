@@ -18,6 +18,7 @@ import PRTable from '../components/pullRequests/PRTable';
 import PREmptyState from '../components/pullRequests/PREmptyState';
 import PRSearchFilter from '../components/pullRequests/PRSearchFilter';
 import PRContractModal from '../components/pullRequests/PRContractModal';
+import RAGIndexStatus from '../components/rag/RAGIndexStatus';
 
 export default function RepositoryDetails() {
   const { repoId } = useParams();
@@ -355,6 +356,9 @@ export default function RepositoryDetails() {
               </span>
             </div>
           )}
+
+          {/* RAG Codebase Indexing Status */}
+          <RAGIndexStatus repoId={repo.id || repo.github_repo_id} />
         </div>
       </div>
 

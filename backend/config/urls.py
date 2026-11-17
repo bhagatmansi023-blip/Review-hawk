@@ -30,6 +30,7 @@ urlpatterns = [
     path("api/auth/", include("repos.auth_urls")),
     path("api/webhook/", include("reviews.urls")),
     path("api/repos/", include("repos.urls")),
+    path("api/rag/", include("rag.urls")),
     path("api/", include("reviews.api_urls")),
 
     # Top-level PR and review endpoints (separate from nested repo routes)

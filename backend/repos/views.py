@@ -187,6 +187,14 @@ class RegisterWebhookView(APIView):
             webhook_msg = ensure_repo_webhook(gh_repo, db_repo)
             imported = sync_open_pull_requests(gh_repo, db_repo)
 
+            # Trigger asynchronous RAG codebase indexing
+            try:
+                from rag.tasks import index_repository_task
+                index_repository_task.delay(db_repo.pk)
+                logger.info("Triggered RAG indexing for %s", db_repo.full_name)
+            except Exception as rag_exc:  # noqa: BLE001
+                logger.warning("Could not trigger RAG indexing for %s: %s", db_repo.full_name, rag_exc)
+
             results.append(
                 {
                     "full_name": f"{owner}/{name}",
